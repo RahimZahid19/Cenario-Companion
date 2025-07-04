@@ -137,6 +137,37 @@ def save_sow_to_file(sow_text, filename):
     with open(filename, "w", encoding="utf-8") as f:
         f.write(sow_text)
 
+# def generate_answers_from_transcript(questions):
+#     # Step 1: Get live transcript
+#     transcript_chunks = get_live_captions(max_items=50)
+#     transcript_text = " ".join(transcript_chunks).strip()
+#     # Step 2: Ask Groq to answer each question
+#     url = "https://api.groq.com/openai/v1/chat/completions"
+#     headers = {
+#         "Authorization": f"Bearer {GROQ_API_KEY}",
+#         "Content-Type": "application/json"
+#     }
+#     results = []
+#     for question in questions:
+#         prompt = f"""You are an AI business assistant. Answer the following question based only on the provided transcript.
+# Transcript:
+# \"\"\"
+# {transcript_text}
+# \"\"\"
+# Question: {question}
+# If the answer is not clearly present, say "Not enough information." Keep the response concise and professional."""
+#         data = {
+#             "model": 'llama3-8b-8192',
+#             "messages": [{"role": "user", "content": prompt}],
+#             "temperature": 0.3
+#         }
+#         response = requests.post(url, headers=headers, json=data)
+#         if response.status_code == 200:
+#             answer = response.json()['choices'][0]['message']['content'].strip()
+#             results.append({"question": question, "answer": answer})
+#         else:
+#             results.append({"question": question, "answer": f"[Error {response.status_code}]"})
+#     return results
 
 
 

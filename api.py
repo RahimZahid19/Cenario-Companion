@@ -95,6 +95,7 @@ def _get_latest_transcript_file(doc_type: str):
         raise HTTPException(status_code=404, detail=f"File {filename} not found.")
     with open(abs_filename, "r", encoding="utf-8") as f:
         return f.read()
+    
 
 if __name__ == "__main__":
     import uvicorn

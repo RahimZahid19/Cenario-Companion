@@ -9,6 +9,9 @@ setup_env()
 from langchain.chat_models import init_chat_model
 llm = init_chat_model("llama3-8b-8192", model_provider="groq")
 
+# Global flag to prevent multiple simultaneous processing
+is_processing = False
+
 def generate_sow_from_transcript(transcript_text: str) -> str:
     prompt = (
         "You are a professional business analyst.\n\n"
@@ -48,13 +51,15 @@ def generate_sow_from_transcript(transcript_text: str) -> str:
 
 def clean_with_llm(text: str) -> str:
     prompt = (
-        "You will be given a transcript formatted as [mm:ss] Speaker: sentence.\n"
-        "Your task is to:\n"
-        "- Remove duplicated words or phrases\n"
-        "- Complete broken or incomplete sentences\n"
-        "- Fix grammar and fluency\n"
-        "- Keep the timestamp and speaker format exactly as it is\n\n"
-        "Return ONLY the cleaned transcript — do NOT include any explanation or extra commentary.\n\n"
+        "You will be given a raw meeting transcript formatted as [mm:ss] Speaker: sentence.\n"
+        "Your task is to produce a cleaned version that:\n"
+        "1. Deletes repeated or nearly identical sentences or thoughts.\n"
+        "2. Merges fragmented messages from the same speaker into a single, clear sentence where possible.\n"
+        "3. Removes duplicated words and phrases.\n"
+        "4. Completes any incomplete or broken sentences.\n"
+        "5. Fixes grammar and fluency.\n"
+        "6. Keeps the timestamp and speaker format exactly as it is.\n\n"
+        "Output ONLY the cleaned transcript — do not include any explanation.\n\n"
         f"{text.strip()}"
     )
 
@@ -125,7 +130,8 @@ def format_transcript(filename):
 
 
 def get_latest_transcript():
-    files = [f for f in os.listdir('.') if f.startswith("transcript_") and f.endswith(".txt")]
+    # Only get main transcript files (not summary files)
+    files = [f for f in os.listdir('.') if re.match(r"transcript_\d+\.txt$", f)]
     files.sort(key=os.path.getmtime, reverse=True)
     return files[0] if files else None
 
@@ -214,21 +220,12 @@ def generate_document_from_transcript(transcript_text: str, doc_type: str) -> st
         ),
         "Meeting_Summary": (
             "You are a professional meeting facilitator.\n\n"
-            "Based on the following meeting transcript, generate a comprehensive meeting summary with these sections:\n"
-            "1. Meeting Overview\n"
-            "2. Key Discussion Points\n"
-            "3. Decisions Made\n"
-            "4. Action Items (with owners and deadlines)\n"
-            "5. Risks and Issues Identified\n"
-            "6. Next Steps\n"
-            "7. Follow-up Questions\n"
-            "8. Timeline Updates\n"
-            "9. Resource Requirements\n"
-            "10. Stakeholder Updates\n\n"
+            "Based on the following meeting transcript, generate a clear and concise meeting summary.\n\n"
             "Meeting Transcript:\n"
             f"\"\"\"\n{transcript_text.strip()}\n\"\"\"\n\n"
-            "Generate a detailed meeting summary of approximately 4000 words. Include specific details about decisions, action items, and next steps. "
-            "Only return the completed summary. Do not include extra commentary."
+            "Provide a straightforward summary of what was discussed, key points, and any important outcomes. "
+            "Keep it concise and focused on the main content of the meeting. "
+            "Only return the meeting summary. Do not include extra commentary or structured sections."
         ),
         "Technical_Design": (
             "You are a senior technical architect.\n\n"
@@ -279,33 +276,127 @@ def save_document_to_file(doc_text: str, filename: str):
 
 def generate_documents(latest: str):
     transcript_text = load_transcript(latest)
-    print("\nGenerating documents from transcript...")
+    print("\nGenerating meeting summary from transcript...")
 
     # Create output filename base (using the transcript filename without extension)
     file_base = os.path.splitext(latest)[0]  # Remove .txt extension
     
-    # Generate all document types
-    doc_types = ["SOW", "BRD", "Project_Scope", "Meeting_Summary", "Technical_Design"]
+    # Generate only Meeting Summary document
+    doc_type = "Meeting_Summary"
     
-    for doc_type in doc_types:
-        print(f"\nGenerating {doc_type}...")
-        try:
-            doc_text = generate_document_from_transcript(transcript_text, doc_type)
-            doc_file = f"{file_base}_{doc_type}.txt"
-            save_document_to_file(doc_text, doc_file)
-            print(f"{doc_type} saved to '{doc_file}'")
-        except Exception as e:
-            print(f"Error generating {doc_type}: {e}")
+    print(f"\nGenerating {doc_type}...")
+    try:
+        doc_text = generate_document_from_transcript(transcript_text, doc_type)
+        doc_file = f"{file_base}_{doc_type}.txt"
+        save_document_to_file(doc_text, doc_file)
+        print(f"{doc_type} saved to '{doc_file}'")
+    except Exception as e:
+        print(f"Error generating {doc_type}: {e}")
+
+def get_next_transcript_number():
+    """Get the next transcript number based on existing files"""
+    files = [f for f in os.listdir('.') if f.startswith("transcript_") and f.endswith(".txt")]
+    if not files:
+        return 1
+    
+    numbers = []
+    for file in files:
+        match = re.match(r"transcript_(\d+)\.txt", file)
+        if match:
+            numbers.append(int(match.group(1)))
+    
+    return max(numbers) + 1 if numbers else 1
+
+def convert_chat_to_transcript():
+    """
+    Convert chat.txt to transcript_X.txt and process it using existing functions
+    """
+    global is_processing
+    
+    # Prevent multiple simultaneous processing
+    if is_processing:
+        print("Already processing a transcript. Please wait...")
+        return None
+    
+    try:
+        is_processing = True
+        
+        # Check if chat.txt exists
+        if not os.path.exists("chat.txt"):
+            print("No chat.txt file found.")
+            return None
+        
+        # Check if chat.txt is empty
+        with open("chat.txt", "r", encoding="utf-8") as f:
+            chat_content = f.read().strip()
+        
+        if not chat_content:
+            print("chat.txt is empty. No content to process.")
+            return None
+        
+        # Get next transcript number
+        next_number = get_next_transcript_number()
+        new_transcript_name = f"transcript_{next_number}.txt"
+        
+        print(f"Converting chat.txt to {new_transcript_name}")
+        
+        # Copy chat.txt to new transcript file
+        shutil.copy("chat.txt", new_transcript_name)
+        
+        # Clear chat.txt after copying to prevent duplicate processing
+        with open("chat.txt", "w", encoding="utf-8") as f:
+            f.write("")
+        
+        print(f"Cleared chat.txt to prevent duplicate processing")
+        
+        # Skip cleaning - just generate documents directly
+        print(f"Generating documents from {new_transcript_name}...")
+        generate_documents(new_transcript_name)
+        
+        print(f"Successfully created and processed {new_transcript_name}")
+        return new_transcript_name
+        
+    except Exception as e:
+        print(f"Error converting chat to transcript: {e}")
+        return None
+    finally:
+        is_processing = False
+
+def reset_processing_state():
+    """Reset the processing state and clear chat.txt"""
+    global is_processing
+    is_processing = False
+    try:
+        with open("chat.txt", "w", encoding="utf-8") as f:
+            f.write("")
+        print("Reset processing state and cleared chat.txt")
+        return True
+    except Exception as e:
+        print(f"Error resetting state: {e}")
+        return False
 
 if __name__ == "__main__":
-    latest = get_latest_transcript()
-    if latest:
-        # Process the transcript
-        format_transcript(latest)
-        
-        # Generate all documents
-        generate_documents(latest)
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "process-chat":
+        # Process existing chat.txt file
+        print("Processing existing chat.txt file...")
+        result = convert_chat_to_transcript()
+        if result:
+            print(f"Successfully processed chat.txt to {result}")
+        else:
+            print("Failed to process chat.txt")
     else:
-        print("No transcript file found.")
+        # Process latest transcript (original behavior)
+        latest = get_latest_transcript()
+        if latest:
+            # Process the transcript
+            format_transcript(latest)
+            
+            # Generate only meeting summary
+            generate_documents(latest)
+        else:
+            print("No transcript file found.")
+            print("To process an existing chat.txt file, run: python cleaner.py process-chat")
 
 

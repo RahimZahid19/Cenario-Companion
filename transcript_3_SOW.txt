@@ -1,0 +1,87 @@
+**Statement of Work**
+
+**Project Overview**
+
+The objective of this project is to develop a text generation system using the Retrieval Augmented Generation (RAG) system, which consists of three main components: retriever, vector database, and engineering generator. The system will be used to generate text based on information stored in a database, with the ability to modify and segment the text as required.
+
+**Objectives**
+
+The primary objectives of this project are:
+
+1. To develop a functional RAG system that can generate text based on information stored in a database.
+2. To implement a filter generator using a Large Language Model (LLM) that can provide answers based on user-input stories.
+3. To ensure the system can be modified and segmented as required, with the ability to chunk and filter text.
+
+**Scope of Work**
+
+The scope of this project includes the following components:
+
+1. Development of the RAG system, including the retriever, vector database, and engineering generator.
+2. Implementation of the filter generator using an LLM.
+3. Integration of the filter generator with the RAG system.
+4. Development of a user interface to interact with the system.
+5. Testing and debugging of the system to ensure it meets the project objectives.
+
+**Deliverables**
+
+The following deliverables are expected from this project:
+
+1. A functional RAG system that can generate text based on information stored in a database.
+2. A filter generator using an LLM that can provide answers based on user-input stories.
+3. Documentation of the system architecture and design.
+4. User documentation and training materials.
+5. Test plans and test cases.
+6. A final report detailing the development process and results.
+
+**Timeline**
+
+The estimated timeline for this project is 12 weeks, broken down as follows:
+
+* Week 1-2: System design and architecture
+* Week 3-4: Development of the RAG system and filter generator
+* Week 5-6: Integration of the filter generator with the RAG system
+* Week 7-8: Testing and debugging
+* Week 9-10: User interface development
+* Week 11-12: Final testing and report preparation
+
+**Assumptions**
+
+The following assumptions have been made for the purpose of this project:
+
+1. The RAG system and filter generator will be developed using industry-standard tools and technologies.
+2. The user interface will be developed using a web-based framework.
+3. The system will be tested on a small-scale dataset before being deployed on a larger scale.
+
+**Risks and Mitigation**
+
+The following risks have been identified for this project:
+
+1. Complexity of the RAG system and filter generator, which may impact development time and resources.
+2. Integration challenges between the filter generator and the RAG system.
+3. Difficulty in testing and debugging the system.
+
+Mitigation strategies:
+
+1. Breaking down the development process into smaller tasks and milestones.
+2. Conducting regular code reviews and testing.
+3. Providing additional resources and expertise as needed.
+
+**Acceptance Criteria**
+
+The following acceptance criteria will be used to determine whether the project has been completed successfully:
+
+1. The RAG system and filter generator function as expected.
+2. The system can generate text based on information stored in the database.
+3. The filter generator provides answers based on user-input stories.
+4. The system can be modified and segmented as required.
+5. The system meets the project objectives and deliverables.
+
+**Stakeholders**
+
+The following stakeholders are involved in this project:
+
+1. Project Manager: Responsible for overseeing the project and ensuring it is completed on time and within budget.
+2. Development Team: Responsible for developing the RAG system and filter generator.
+3. Quality Assurance: Responsible for testing and debugging the system.
+4. User: Responsible for providing input and feedback on the system.
+5. Business Sponsor: Responsible for providing overall direction and guidance for the project.
