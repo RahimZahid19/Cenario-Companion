@@ -1,0 +1,8 @@
+The meeting focused on the implementation and integration of the RAG system with Pinecone. Key points discussed include:
+
+* The use of sentence-transformers for embedding generation and sticking with MiniLM-L6-v2 for now due to its speed, but testing BGE-base for better recall.
+* Paragraph-level chunking with overlap for input documents and storing metadata in Pinecone, including doc_id, user_id, title, and created_at timestamp.
+* Using conversational memory with LangChain for follow-up question handling and preprocessing long transcripts using GPT-3.5 before embedding them.
+* Real-time latency is around 1.2-1.5 seconds per query, with potential for optimization with local caching.
+* The possibility of switching from Pinecone to Chroma or FAISS for cost savings was discussed, with a review of costs planned for this Friday.
+* The fallback when no relevant documents are found will be a safe default with a disclaimer, and UX copy will be updated accordingly.
