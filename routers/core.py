@@ -884,3 +884,101 @@ async def answer_question_from_transcript(
             },
             status_code=500,
         )
+
+
+@router.post("/projects")
+async def create_project(req: ProjectCreateRequest):
+    """Create a new project"""
+    try:
+        project_id = str(uuid.uuid4())
+        project_data = req.dict()
+        projects_db[project_id] = project_data
+        
+        return create_json_response({
+            "status": "success",
+            "message": "Project created successfully",
+            "project_id": project_id,
+            **project_data
+        })
+    except Exception as e:
+        return create_json_response(
+            {
+                "status": "error",
+                "message": f"Error creating project: {str(e)}"
+            },
+            status_code=500,
+        )
+
+@router.get("/get_all_sessions")
+async def get_all_sessions():
+    """Get all session IDs with their respective session details"""
+    try:
+        # Check if there are any sessions
+        if not sessions_db:
+            return create_json_response(
+                {
+                    "status": True,
+                    "message": "No sessions found",
+                    "total_sessions": 0,
+                    "sessions": {}
+                }
+            )
+        
+        # Return all sessions with their details
+        return create_json_response(
+            {
+                "status": True,
+                "message": f"Retrieved {len(sessions_db)} sessions successfully",
+                "total_sessions": len(sessions_db),
+                "sessions": sessions_db
+            }
+        )
+        
+    except Exception as e:
+        return create_json_response(
+            {
+                "status": False,
+                "error_code": "UNEXPECTED_ERROR",
+                "message": f"Error retrieving sessions: {str(e)}",
+                "total_sessions": 0,
+                "sessions": {}
+            },
+            status_code=500,
+        )
+
+@router.get("/projects")
+async def get_all_projects():
+    """Get all projects"""
+    try:
+        # Check if there are any projects
+        if not projects_db:
+            return create_json_response(
+                {
+                    "status": True,
+                    "message": "No projects found",
+                    "total_projects": 0,
+                    "projects": {}
+                }
+            )
+        
+        # Return all projects with their details
+        return create_json_response(
+            {
+                "status": True,
+                "message": f"Retrieved {len(projects_db)} projects successfully",
+                "total_projects": len(projects_db),
+                "projects": projects_db
+            }
+        )
+        
+    except Exception as e:
+        return create_json_response(
+            {
+                "status": False,
+                "error_code": "UNEXPECTED_ERROR",
+                "message": f"Error retrieving projects: {str(e)}",
+                "total_projects": 0,
+                "projects": {}
+            },
+            status_code=500,
+        )        

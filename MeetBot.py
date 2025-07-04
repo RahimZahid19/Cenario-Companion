@@ -7,6 +7,12 @@ from datetime import datetime
 import threading
 import asyncio
 import json
+import sys
+import platform
+
+# Windows-specific asyncio fix
+if platform.system() == "Windows":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # Load credentials (kept for fallback if needed)
 load_dotenv()
@@ -138,7 +144,15 @@ def start_meeting_bot(meeting_url: str):
             print(f"Warning: Could not clear chat.txt: {e}")
 
         def run():
-            asyncio.run(start_bot_task())
+            # Windows-specific event loop setup for threads
+            if platform.system() == "Windows":
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(start_bot_task())
+            finally:
+                loop.close()
 
         async def start_bot_task():
             print(f"🔁 Joining meeting: {meeting_url}")
