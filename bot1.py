@@ -8,6 +8,13 @@ import requests
 from PyPDF2 import PdfReader
 from dotenv import load_dotenv
 import threading
+import platform
+import asyncio
+
+# Windows-specific asyncio fix for sync_playwright
+if platform.system() == "Windows":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 load_dotenv()
 
 # CONFIG
