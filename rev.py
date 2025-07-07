@@ -14,7 +14,7 @@ import io
 load_dotenv()
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
-INDEX_NAME = "test"
+INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 
 # Initialize Pinecone and index
 pc = Pinecone(api_key=PINECONE_API_KEY)
