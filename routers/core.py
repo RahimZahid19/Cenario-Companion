@@ -11,6 +11,7 @@ from typing import List
 from datetime import datetime
 from fastapi.responses import JSONResponse, PlainTextResponse
 import re
+import time
 
 
 
@@ -21,6 +22,10 @@ projects_db = {}
 sessions_db = {}
 questions_db = {}
 latest_metadata = None
+bot_startup_lock = asyncio.Lock()
+bot_state = "idle"  # "idle", "starting", "running", "stopping"
+last_join_time = 0
+MIN_STARTUP_TIME = 3
 
 class JoinMeetingRequest(BaseModel):
     meeting_id: str
@@ -39,45 +44,81 @@ class ProcessMeetingEndRequest(BaseModel):
 
 @router.post("/join-meeting")
 async def join_meeting(request: JoinMeetingRequest = Body(...)):
-    try:
-        # Validate the meeting ID
-        meeting_id = request.meeting_id.strip() if request.meeting_id else ""
-        if not meeting_id:
+    global last_join_time, bot_state
+    
+    async with bot_startup_lock:
+        try:
+            # Check current bot state
+            if bot_state in ["starting", "running", "stopping"]:
+                return create_json_response(
+                    {
+                        "status": "error",
+                        "bot_running": True,
+                        "message": f"Bot is currently {bot_state}. Please wait.",
+                        "bot_state": bot_state
+                    },
+                    status_code=409,  # Conflict
+                )
+
+            # Validate the meeting ID
+            meeting_id = request.meeting_id.strip() if request.meeting_id else ""
+            if not meeting_id:
+                return create_json_response(
+                    {
+                        "status": "error",
+                        "bot_running": False,
+                        "message": "Meeting ID is required",
+                    },
+                    status_code=400,
+                )
+
+            # Set state to starting
+            bot_state = "starting"
+            last_join_time = time.time()
+
+            # Construct the full Google Meet URL
+            meeting_url = f"https://meet.google.com/{meeting_id}"
+            
+            # Use run_in_threadpool for the synchronous start_meeting_bot function
+            started = await run_in_threadpool(start_meeting_bot, meeting_url)
+            
+            if started:
+                # Give browser time to fully initialize
+                await asyncio.sleep(2)
+                bot_state = "running"
+                
+                return create_json_response(
+                    {
+                        "status": "started",
+                        "message": "Bot joined the meeting successfully",
+                        "meeting_id": meeting_id,
+                        "meeting_url": meeting_url,
+                        "bot_state": bot_state
+                    }
+                )
+            else:
+                bot_state = "running"  # Already running case
+                return create_json_response(
+                    {
+                        "status": "already running",
+                        "message": "Bot is already running",
+                        "meeting_id": meeting_id,
+                        "meeting_url": meeting_url,
+                        "bot_state": bot_state
+                    }
+                )
+                
+        except Exception as e:
+            bot_state = "idle"  # Reset state on error
             return create_json_response(
                 {
-                "status": "error",
-                "bot_running": False,
-                    "message": "Meeting ID is required",
+                    "status": "error",
+                    "bot_running": False,
+                    "message": f"Error starting bot: {str(e)}",
+                    "bot_state": bot_state
                 },
-                status_code=400,
+                status_code=500,
             )
-
-        # Construct the full Google Meet URL
-        meeting_url = f"https://meet.google.com/{meeting_id}"
-        
-        # Use run_in_threadpool for the synchronous start_meeting_bot function
-        started = await run_in_threadpool(start_meeting_bot, meeting_url)
-        return create_json_response(
-            {
-            "status": "started" if started else "already running",
-                "message": (
-                    "Bot joined the meeting successfully"
-                    if started
-                    else "Bot is already running"
-                ),
-            "meeting_id": meeting_id,
-                "meeting_url": meeting_url,
-            }
-        )
-    except Exception as e:
-        return create_json_response(
-            {
-            "status": "error",
-            "bot_running": False,
-                "message": f"Error starting bot: {str(e)}",
-            },
-            status_code=500,
-        )
 
 @router.post("/sessions")
 async def create_session_with_file(
@@ -90,46 +131,68 @@ async def create_session_with_file(
     file_uploaded: bool = Form(False),
     file: UploadFile = File(None),
 ):
-    session_id = str(uuid.uuid4())
-    session_data = {
-        "project_id": project_id,
-        "meeting_title": meeting_title,
-        "stakeholders": stakeholders,
-        "session_objective": session_objective,
-        "requirement_type": requirement_type,
-        "followup_questions": followup_questions,
-        "file_uploaded": file_uploaded,
-        "session_id": session_id,
-    }
-    sessions_db[session_id] = session_data
-    questions = []
-    if file and file.filename.endswith(".pdf"):
-        path = os.path.join(BASE_DIR, f"{session_id}_{file.filename}")
-        contents = await file.read()
-        with open(path, "wb") as f:
-            f.write(contents)
-        text = extract_text_from_pdf(path)
-        os.remove(path)
-        if text.strip():
-            raw_qs = await run_in_threadpool(lambda: generate_questions_with_groq(text, num_questions=10))
-            questions = [
-                {
-                    "id": f"func-req-{i+1:03d}",
-                    "answer_key": f"q{i+1:03d}",
-                    "question": q,
-                    "category": "Functional Requirement",
-                    "dataFormat": "json",
-                    "answer": "",
-                    "source": ""
-                } for i, q in enumerate(raw_qs)
-            ]
-            questions_db[session_id] = questions
-    return create_json_response({
-        "status": "success",
-        "message": "Session created",
-        **session_data,
-        "data": questions
-    })
+    try:
+        # Basic validation
+        if not project_id.strip() or not meeting_title.strip():
+            return create_json_response({
+                "status": "error",
+                "message": "Project ID and meeting title are required"
+            }, status_code=400)
+
+        session_id = str(uuid.uuid4())
+        session_data = {
+            "project_id": project_id,
+            "meeting_title": meeting_title,
+            "stakeholders": stakeholders,
+            "session_objective": session_objective,
+            "requirement_type": requirement_type,
+            "followup_questions": followup_questions,
+            "file_uploaded": file_uploaded,
+            "session_id": session_id,
+        }
+        sessions_db[session_id] = session_data
+        questions = []
+        
+        if file and file.filename.endswith(".pdf"):
+            try:
+                path = os.path.join(BASE_DIR, f"{session_id}_{file.filename}")
+                contents = await file.read()
+                with open(path, "wb") as f:
+                    f.write(contents)
+                text = extract_text_from_pdf(path)
+                os.remove(path)
+                if text.strip():
+                    raw_qs = await run_in_threadpool(lambda: generate_questions_with_groq(text, num_questions=10))
+                    questions = [
+                        {
+                            "id": f"func-req-{i+1:03d}",
+                            "answer_key": f"q{i+1:03d}",
+                            "question": q,
+                            "category": "Functional Requirement",
+                            "dataFormat": "json",
+                            "answer": "",
+                            "source": ""
+                        } for i, q in enumerate(raw_qs)
+                    ]
+                    questions_db[session_id] = questions
+            except Exception as file_error:
+                return create_json_response({
+                    "status": "error",
+                    "message": f"File processing error: {str(file_error)}"
+                }, status_code=500)
+        
+        return create_json_response({
+            "status": "success",
+            "message": "Session created",
+            **session_data,
+            "data": questions
+        })
+        
+    except Exception as e:
+        return create_json_response({
+            "status": "error",
+            "message": f"Error creating session: {str(e)}"
+        }, status_code=500)
 
 @router.get("/cleaned-transcript")
 async def get_cleaned_transcript_json(
@@ -395,68 +458,73 @@ async def get_cleaned_transcript_json(
             status_code=500,
         )
 
-@router.post("/questions/generated")
-async def generate_questions_from_pdf(
-    file: UploadFile = File(...),
-    session_id: str = Query(..., description="Session ID to associate questions with"),
-):
-    # Check if session exists and has file_uploaded flag
-    session = sessions_db.get(session_id)
-    if not session:
-        return create_json_response({"error": "Session not found"}, status_code=404)
+# @router.post("/questions/generated")
+# async def generate_questions_from_pdf(
+#     file: UploadFile = File(...),
+#     session_id: str = Query(..., description="Session ID to associate questions with"),
+# ):
+#     # Check if session exists and has file_uploaded flag
+#     session = sessions_db.get(session_id)
+#     if not session:
+#         return create_json_response({"error": "Session not found"}, status_code=404)
     
-    if not session.get("file_uploaded", False):
-        return create_json_response(
-            {
-            "error": "File upload not enabled for this session. Please set file_uploaded to true when creating the session."
-            },
-            status_code=400,
-        )
+#     if not session.get("file_uploaded", False):
+#         return create_json_response(
+#             {
+#             "error": "File upload not enabled for this session. Please set file_uploaded to true when creating the session."
+#             },
+#             status_code=400,
+#         )
 
-    if not file.filename.lower().endswith(".pdf"):
-        return create_json_response(
-            {"error": "Only PDF files are supported."}, status_code=400
-        )
-    try:
-        contents = await file.read()
-        temp_path = os.path.join(BASE_DIR, file.filename)
-        with open(temp_path, "wb") as f:
-            f.write(contents)
-        text = extract_text_from_pdf(temp_path)
-        os.remove(temp_path)
-        questions = generate_questions_with_groq(text, num_questions=10)
+#     if not file.filename.lower().endswith(".pdf"):
+#         return create_json_response(
+#             {"error": "Only PDF files are supported."}, status_code=400
+#         )
+#     try:
+#         contents = await file.read()
+#         temp_path = os.path.join(BASE_DIR, file.filename)
+#         with open(temp_path, "wb") as f:
+#             f.write(contents)
+#         text = extract_text_from_pdf(temp_path)
+#         os.remove(temp_path)
+#         questions = generate_questions_with_groq(text, num_questions=10)
 
-        # Format questions as required
-        data_formats = ["json", "xml", "json", "csv"]
-        questions = [
-            {
-                "id": f"func-req-{idx+1:03d}",
-                "answer_key": f"q{idx+1:03d}",
-                "question": q,
-                "category": "Functional Requirement",
-                "dataFormat": data_formats[idx % len(data_formats)],
-                "answer": "",
-                "source": "",
-            }
-            for idx, q in enumerate(questions)
-        ]
+#         # Format questions as required
+#         data_formats = ["json", "xml", "json", "csv"]
+#         questions = [
+#             {
+#                 "id": f"func-req-{idx+1:03d}",
+#                 "answer_key": f"q{idx+1:03d}",
+#                 "question": q,
+#                 "category": "Functional Requirement",
+#                 "dataFormat": data_formats[idx % len(data_formats)],
+#                 "answer": "",
+#                 "source": "",
+#             }
+#             for idx, q in enumerate(questions)
+#         ]
         
-        # Store questions in memory
-        questions_db[session_id] = questions
+#         # Store questions in memory
+#         questions_db[session_id] = questions
         
-        response = {
-            "status": "success",
-            "message": "Questions generated and stored successfully.",
-            **session,
-            "data": questions,
-        }
-        return create_json_response(response)
-    except Exception as e:
-        return create_json_response({"error": str(e)}, status_code=500)
+#         response = {
+#             "status": "success",
+#             "message": "Questions generated and stored successfully.",
+#             **session,
+#             "data": questions,
+#         }
+#         return create_json_response(response)
+#     except Exception as e:
+#         return create_json_response({"error": str(e)}, status_code=500)
 
 @router.post("/finalize_metadata")
 async def finalize_metadata(req: FinalizeMetadataRequest):
     try:
+        if not req or not req.session_id:
+            return create_json_response({
+                "error": "Session ID is required"
+            }, status_code=400)
+            
         print("Available session IDs:", list(sessions_db.keys()))
         print("Requested session_id:", req.session_id)
         session = sessions_db.get(req.session_id)
@@ -486,163 +554,241 @@ async def finalize_metadata(req: FinalizeMetadataRequest):
         return create_json_response(
             {"error": f"Error finalizing metadata: {str(e)}"}, status_code=500
         )
+
+
 @router.post("/process-meeting-end")
 async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
     """Manually trigger the meeting end processing workflow with session_id and make bot leave"""
-    try:
-        session_id = req.session_id.strip() if req.session_id else ""
-        print(f"🔍 Debug: Received request with session_id: {session_id}")
-        
-        session = sessions_db.get(session_id)
-        if not session:
-            print(f"❌ Session {session_id} not found")
-            return create_json_response(
-                {
-                "status": False,
-                "message": "Session not found",
-                "debug_info": {
-                    "requested_session": session_id,
-                        "available_sessions": list(sessions_db.keys()),
-                    },
-                },
-                status_code=404,
-            )
-
-        print(f"✅ Session found. Attempting to leave meeting...")
-
-        # Properly shut down bot using run_in_threadpool
+    global last_join_time, bot_state
+    
+    async with bot_startup_lock:
         try:
-            from MeetBot import leave_meeting
+            # Check if bot is in a valid state to stop
+            if bot_state == "idle":
+                return create_json_response(
+                    {
+                        "status": False,
+                        "message": "No bot is currently running",
+                        "bot_state": bot_state
+                    },
+                    status_code=400,
+                )
+            
+            if bot_state == "stopping":
+                return create_json_response(
+                    {
+                        "status": False,
+                        "message": "Bot is already being stopped. Please wait.",
+                        "bot_state": bot_state
+                    },
+                    status_code=409,
+                )
 
-            leave_success = await run_in_threadpool(leave_meeting)
-        except Exception as leave_err:
-            print(f"⚠️ Bot shutdown failed: {leave_err}")
-            leave_success = False
+            # If bot is still starting, wait for it to finish or timeout
+            if bot_state == "starting":
+                print("⏳ Bot is still starting. Waiting for it to complete...")
+                wait_count = 0
+                max_wait = 15  # Maximum 15 seconds to wait
+                
+                while bot_state == "starting" and wait_count < max_wait:
+                    await asyncio.sleep(1)
+                    wait_count += 1
+                
+                if bot_state == "starting":
+                    # Force reset if stuck in starting state
+                    bot_state = "idle"
+                    return create_json_response(
+                        {
+                            "status": False,
+                            "message": "Bot startup timed out. State reset.",
+                            "bot_state": bot_state
+                        },
+                        status_code=408,  # Request Timeout
+                    )
 
-        # Try to process transcript
-        from cleaner import convert_chat_to_transcript, get_latest_transcript
+            # Check if enough time has passed since joining
+            time_since_start = time.time() - last_join_time
+            if last_join_time > 0 and time_since_start < MIN_STARTUP_TIME:
+                wait_time = MIN_STARTUP_TIME - time_since_start
+                return create_json_response(
+                    {
+                        "status": False,
+                        "message": f"Please wait {wait_time:.1f} more seconds before ending the meeting. Bot is still stabilizing.",
+                        "retry_after": wait_time,
+                        "bot_state": bot_state
+                    },
+                    status_code=429,
+                )
 
-        result = await run_in_threadpool(convert_chat_to_transcript)
-        if not result:
-            result = await run_in_threadpool(get_latest_transcript)
+            # Set state to stopping
+            bot_state = "stopping"
 
-        meeting_id = "fch-wctx-ujo"  # Replace with dynamic ID if available
+            session_id = req.session_id.strip() if req.session_id else ""
+            print(f"🔍 Debug: Received request with session_id: {session_id}")
+            
+            session = sessions_db.get(session_id)
+            if not session:
+                bot_state = "idle"  # Reset state
+                print(f"❌ Session {session_id} not found")
+                return create_json_response(
+                    {
+                        "status": False,
+                        "message": "Session not found",
+                        "debug_info": {
+                            "requested_session": session_id,
+                            "available_sessions": list(sessions_db.keys()),
+                        },
+                        "bot_state": bot_state
+                    },
+                    status_code=404,
+                )
 
-        generated_count = 0
+            print(f"✅ Session found. Attempting to leave meeting...")
 
-        if result:
+            # Properly shut down bot using run_in_threadpool
             try:
-                transcript_path = os.path.join(BASE_DIR, result)
-                if not os.path.exists(transcript_path):
-                    raise FileNotFoundError("Transcript file not found.")
+                from MeetBot import leave_meeting
 
-                with open(transcript_path, "r", encoding="utf-8") as f:
-                    transcript_text = f.read()
+                leave_success = await run_in_threadpool(leave_meeting)
+                
+                # Give extra time for cleanup
+                await asyncio.sleep(2)
+                
+            except Exception as leave_err:
+                print(f"⚠️ Bot shutdown failed: {leave_err}")
+                leave_success = False
 
-                from cleaner import llm
+            # Reset state to idle after cleanup
+            bot_state = "idle"
+            last_join_time = 0
 
-                questions = questions_db.get(session_id, [])
+            # Try to process transcript
+            from cleaner import convert_chat_to_transcript, get_latest_transcript
 
-                for question in questions:
-                    if question.get("source") == "manual" and question.get("answer"):
-                        continue
+            result = await run_in_threadpool(convert_chat_to_transcript)
+            if not result:
+                result = await run_in_threadpool(get_latest_transcript)
 
-                    try:
-                        prompt = f"""
-                        Based on the following meeting transcript, answer this specific question:
+            meeting_id = "fch-wctx-ujo"
+            generated_count = 0
 
-                        Question: {question.get('question', '')}
+            if result:
+                try:
+                    transcript_path = os.path.join(BASE_DIR, result)
+                    if not os.path.exists(transcript_path):
+                        raise FileNotFoundError("Transcript file not found.")
 
-                        Meeting Transcript:
-                        {transcript_text[:3000]}
+                    with open(transcript_path, "r", encoding="utf-8") as f:
+                        transcript_text = f.read()
 
-                        Provide a clear, concise answer based only on the information in the transcript.
-                        If the answer is not found in the transcript or is unclear, respond with exactly "NOT_DISCUSSED".
-                        Keep the answer to 1-2 sentences maximum.
-                        Only provide an answer if the information is explicitly discussed in the transcript.
-                        """
+                    from cleaner import llm
+                    questions = questions_db.get(session_id, [])
 
-                        result_llm = await run_in_threadpool(llm.invoke, prompt)
-                        answer = (
-                            result_llm.content.strip()
-                            if hasattr(result_llm, "content")
-                            else str(result_llm).strip()
-                        )
-                        answer = answer.replace("\n", " ").strip()
+                    for question in questions:
+                        if question.get("source") == "manual" and question.get("answer"):
+                            continue
 
-                        if any(
-                            token in answer.upper()
-                            for token in [
-                                "NOT_DISCUSSED",
-                                "NOT DISCUSSED",
-                                "UNKNOWN",
-                                "UNCLEAR",
-                                "NOT FOUND IN THE TRANSCRIPT",
-                            ]
-                        ):
+                        try:
+                            prompt = f"""
+                            Based on the following meeting transcript, answer this specific question:
+
+                            Question: {question.get('question', '')}
+
+                            Meeting Transcript:
+                            {transcript_text[:3000]}
+
+                            Provide a clear, concise answer based only on the information in the transcript.
+                            If the answer is not found in the transcript or is unclear, respond with exactly "NOT_DISCUSSED".
+                            Keep the answer to 1-2 sentences maximum.
+                            Only provide an answer if the information is explicitly discussed in the transcript.
+                            """
+
+                            result_llm = await run_in_threadpool(llm.invoke, prompt)
+                            answer = (
+                                result_llm.content.strip()
+                                if hasattr(result_llm, "content")
+                                else str(result_llm).strip()
+                            )
+                            answer = answer.replace("\n", " ").strip()
+
+                            if any(
+                                token in answer.upper()
+                                for token in [
+                                    "NOT_DISCUSSED",
+                                    "NOT DISCUSSED", 
+                                    "UNKNOWN",
+                                    "UNCLEAR",
+                                    "NOT FOUND IN THE TRANSCRIPT",
+                                ]
+                            ):
+                                question["answer"] = ""
+                                question["source"] = ""
+                            else:
+                                question["answer"] = answer
+                                question["source"] = "generated"
+
+                            generated_count += 1
+
+                        except Exception as llm_error:
+                            print(f"⚠️ LLM error for question {question.get('id', 'unknown')}: {llm_error}")
                             question["answer"] = ""
                             question["source"] = ""
-                        else:
-                            question["answer"] = answer
-                            question["source"] = "generated"
+                            generated_count += 1
 
-                        generated_count += 1
+                    questions_db[session_id] = questions
+                    print(f"✅ Generated answers for {generated_count} questions")
 
-                    except Exception as llm_error:
-                        print(
-                            f"⚠️ LLM error for question {question.get('id', 'unknown')}: {llm_error}"
-                        )
-                        question["answer"] = ""
-                        question["source"] = ""
-                        generated_count += 1
+                except Exception as answer_error:
+                    print(f"❌ Error during answer generation: {answer_error}")
 
-                questions_db[session_id] = questions
-                print(f"✅ Generated answers for {generated_count} questions")
+                return create_json_response(
+                    {
+                        "status": True,
+                        "message": "Meeting processing completed successfully",
+                        "session_id": session_id,
+                        "meeting_id": meeting_id,
+                        "bot_left": leave_success,
+                        "transcript_file": result,
+                        "answers_generated": generated_count,
+                        "documents_generated": [],
+                        "bot_state": bot_state
+                    }
+                )
 
-            except Exception as answer_error:
-                print(f"❌ Error during answer generation: {answer_error}")
+            else:
+                return create_json_response(
+                    {
+                        "status": False,
+                        "message": "Bot left the meeting, but no transcript was captured. Captions may have been disabled or no one spoke.",
+                        "session_id": session_id,
+                        "meeting_id": meeting_id,
+                        "bot_left": leave_success,
+                        "transcript_file": None,
+                        "answers_generated": 0,
+                        "documents_generated": [],
+                        "bot_state": bot_state
+                    },
+                    status_code=200,
+                )
 
+        except Exception as e:
+            import traceback
+            
+            # Reset state on any error
+            bot_state = "idle"
+            last_join_time = 0
+
+            print(f"❌ Error in process_meeting_end: {str(e)}")
+            print(traceback.format_exc())
             return create_json_response(
                 {
-                    "status": True,
-                    "message": "Meeting processing completed successfully",
-                    "session_id": session_id,
-                    "meeting_id": meeting_id,
-                    "bot_left": leave_success,
-                    "transcript_file": result,
-                    "answers_generated": generated_count,
-                    "documents_generated": [],
-                }
-            )
-
-        else:
-            return create_json_response(
-                {
-                "status": False,
-                    "message": "Bot left the meeting, but no transcript was captured. Captions may have been disabled or no one spoke.",
-                "session_id": session_id,
-                "meeting_id": meeting_id,
-                "bot_left": leave_success,
-                "transcript_file": None,
-                "answers_generated": 0,
-                    "documents_generated": [],
+                    "status": False,
+                    "message": f"Error processing meeting end: {str(e)}",
+                    "session_id": getattr(req, "session_id", "unknown"),
+                    "bot_state": bot_state
                 },
-                status_code=200,
+                status_code=500,
             )
-
-    except Exception as e:
-        import traceback
-
-        print(f"❌ Error in process_meeting_end: {str(e)}")
-        print(traceback.format_exc())
-        return create_json_response(
-            {
-            "status": False,
-            "message": f"Error processing meeting end: {str(e)}",
-                "session_id": getattr(req, "session_id", "unknown"),
-            },
-            status_code=500,
-        )
 
 @router.get("/questions/generated/{session_id}")
 async def get_generated_questions(
@@ -890,6 +1036,12 @@ async def answer_question_from_transcript(
 async def create_project(req: ProjectCreateRequest):
     """Create a new project"""
     try:
+        if not req:
+            return create_json_response({
+                "status": "error",
+                "message": "Request body is required"
+            }, status_code=400)
+            
         project_id = str(uuid.uuid4())
         project_data = req.dict()
         projects_db[project_id] = project_data
@@ -901,13 +1053,10 @@ async def create_project(req: ProjectCreateRequest):
             **project_data
         })
     except Exception as e:
-        return create_json_response(
-            {
-                "status": "error",
-                "message": f"Error creating project: {str(e)}"
-            },
-            status_code=500,
-        )
+        return create_json_response({
+            "status": "error",
+            "message": f"Error creating project: {str(e)}"
+        }, status_code=500)
 
 @router.get("/get_all_sessions")
 async def get_all_sessions():
@@ -982,3 +1131,81 @@ async def get_all_projects():
             },
             status_code=500,
         )        
+
+@router.delete("/sessions/{identifier}")
+async def delete_session(identifier: str = Path(..., description="Session ID or session name to delete")):
+    """Delete a session by session_id or session name (meeting_title)"""
+    try:
+        if not identifier or not identifier.strip():
+            return create_json_response(
+                {
+                    "status": False,
+                    "message": "Session identifier is required",
+                    "deleted": False
+                },
+                status_code=400,
+            )
+        
+        identifier = identifier.strip()
+        session_to_delete = None
+        session_id_to_delete = None
+        
+        # First, try to find by session_id (exact match)
+        if identifier in sessions_db:
+            session_to_delete = sessions_db[identifier]
+            session_id_to_delete = identifier
+        else:
+            # If not found by ID, search by meeting_title (session name)
+            for session_id, session_data in sessions_db.items():
+                if session_data.get("meeting_title", "").lower() == identifier.lower():
+                    session_to_delete = session_data
+                    session_id_to_delete = session_id
+                    break
+        
+        # If session not found by either ID or name
+        if not session_to_delete:
+            return create_json_response(
+                {
+                    "status": False,
+                    "message": f"Session not found with identifier: {identifier}",
+                    "deleted": False,
+                    "available_sessions": list(sessions_db.keys()),
+                    "available_session_names": [
+                        session.get("meeting_title", "Unnamed") 
+                        for session in sessions_db.values()
+                    ]
+                },
+                status_code=404,
+            )
+        
+        # Delete the session from sessions_db
+        deleted_session = sessions_db.pop(session_id_to_delete)
+        
+        # Also delete associated questions if they exist
+        deleted_questions = []
+        if session_id_to_delete in questions_db:
+            deleted_questions = questions_db.pop(session_id_to_delete)
+        
+        return create_json_response(
+            {
+                "status": True,
+                "message": f"Session deleted successfully",
+                "deleted": True,
+                "deleted_session_id": session_id_to_delete,
+                "deleted_session_name": deleted_session.get("meeting_title", "Unnamed"),
+                "deleted_session_data": deleted_session,
+                "deleted_questions_count": len(deleted_questions),
+                "remaining_sessions": len(sessions_db)
+            }
+        )
+        
+    except Exception as e:
+        return create_json_response(
+            {
+                "status": False,
+                "error_code": "UNEXPECTED_ERROR",
+                "message": f"Error deleting session: {str(e)}",
+                "deleted": False
+            },
+            status_code=500,
+        )
