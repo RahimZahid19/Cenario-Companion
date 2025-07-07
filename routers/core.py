@@ -1074,27 +1074,62 @@ async def create_project(req: ProjectCreateRequest):
         }, status_code=500)
 
 @router.get("/get_all_sessions")
-async def get_all_sessions():
-    """Get all session IDs with their respective session details"""
+async def get_all_sessions(project_id: str = Query(..., description="Project ID to filter sessions")):
+    """Get all session IDs with their respective session details for a specific project"""
     try:
+        # Validate project_id
+        if not project_id or not project_id.strip():
+            return create_json_response(
+                {
+                    "status": False,
+                    "message": "Project ID is required",
+                    "total_sessions": 0,
+                    "sessions": {}
+                },
+                status_code=400
+            )
+        
+        project_id = project_id.strip()
+        
         # Check if there are any sessions
         if not sessions_db:
             return create_json_response(
                 {
                     "status": True,
                     "message": "No sessions found",
+                    "project_id": project_id,
                     "total_sessions": 0,
                     "sessions": {}
                 }
             )
         
-        # Return all sessions with their details
+        # Filter sessions by project_id
+        filtered_sessions = {}
+        for session_id, session_data in sessions_db.items():
+            if session_data.get("project_id") == project_id:
+                filtered_sessions[session_id] = session_data
+        
+        # Check if any sessions found for this project
+        if not filtered_sessions:
+            return create_json_response(
+                {
+                    "status": True,
+                    "message": f"No sessions found for project: {project_id}",
+                    "project_id": project_id,
+                    "total_sessions": 0,
+                    "sessions": {},
+                    "available_projects": list(set(session.get("project_id") for session in sessions_db.values() if session.get("project_id")))
+                }
+            )
+        
+        # Return filtered sessions
         return create_json_response(
             {
                 "status": True,
-                "message": f"Retrieved {len(sessions_db)} sessions successfully",
-                "total_sessions": len(sessions_db),
-                "sessions": sessions_db
+                "message": f"Sessions retrieved successfully for project: {project_id}",
+                "project_id": project_id,
+                "total_sessions": len(filtered_sessions),
+                "sessions": filtered_sessions
             }
         )
         
@@ -1102,8 +1137,8 @@ async def get_all_sessions():
         return create_json_response(
             {
                 "status": False,
-                "error_code": "UNEXPECTED_ERROR",
                 "message": f"Error retrieving sessions: {str(e)}",
+                "project_id": project_id if 'project_id' in locals() else None,
                 "total_sessions": 0,
                 "sessions": {}
             },
