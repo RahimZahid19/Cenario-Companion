@@ -1,8 +1,0 @@
-[18:36:00] Mirza Raed: Or right but let's get started. As you know we are kicking off the Swift. Drop Logistic Project, Our goal is to streamline e-commerce delivery management through a web platform and mobile driver port.
-[18:36:09] Hakrenx: Sounds good Samir, I reviewed the statement of work, it seems pretty much pretty structured with clear physics. Shall we go over the project?
-[18:36:21] Mirza Raed: Yes, the first milestone is UI US design wireframes and mock apps. We've got two weeks for this, I suggest you handle wireframes and I can start refining the dashboard and driver portal.
-[18:36:29] Hakrenx: Agreed. I'll begin with the dispatcher and admin views. Let's aim to have initial sketches ready in three days for feedback.
-[18:36:41] Mirza Raed: Perfect. Also, we need to make sure the design support role-based access early on admin dispatcher driver, will layer that logic enduring backend. It should be reflected in the u
-[18:36:48] Hakrenx: Good point. I'll note that how about communications lacks slack or fellow? Right. Okay. Goodbye
-[18:36:58] Mirza Raed: It's not from messaging. Trailer for Tracking Tasks, Let's meet weekly to sync up. Unless urgent change, chair charges are arises.
-[18:37:00] Hakrenx: Goodbye.

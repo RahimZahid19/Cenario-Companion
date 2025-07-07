@@ -24,6 +24,8 @@ questions_db = {}
 latest_metadata = None
 bot_startup_lock = asyncio.Lock()
 bot_state = "idle"  # "idle", "starting", "running", "stopping"
+bot_join_task = None
+current_meeting_id = None  # "idle", "starting", "running", "stopping"
 last_join_time = 0
 MIN_STARTUP_TIME = 3
 
@@ -44,81 +46,73 @@ class ProcessMeetingEndRequest(BaseModel):
 
 @router.post("/join-meeting")
 async def join_meeting(request: JoinMeetingRequest = Body(...)):
-    global last_join_time, bot_state
+    global bot_state, bot_join_task, current_meeting_id, last_join_time
     
     async with bot_startup_lock:
         try:
-            # Check current bot state
-            if bot_state in ["starting", "running", "stopping"]:
-                return create_json_response(
-                    {
-                        "status": "error",
-                        "bot_running": True,
-                        "message": f"Bot is currently {bot_state}. Please wait.",
-                        "bot_state": bot_state
-                    },
-                    status_code=409,  # Conflict
-                )
-
-            # Validate the meeting ID
+            # Check if bot is already running or starting
+            if bot_state in ["starting", "running"]:
+                return create_json_response({
+                    "status": "error",
+                    "message": f"Bot is already {bot_state}. Please wait or stop the current session.",
+                    "bot_running": True,
+                    "bot_state": bot_state,
+                    "current_meeting_id": current_meeting_id
+                })
+            
+            # Validate meeting ID
             meeting_id = request.meeting_id.strip() if request.meeting_id else ""
             if not meeting_id:
-                return create_json_response(
-                    {
-                        "status": "error",
-                        "bot_running": False,
-                        "message": "Meeting ID is required",
-                    },
-                    status_code=400,
-                )
-
-            # Set state to starting
+                return create_json_response({
+                    "status": "error",
+                    "message": "Meeting ID is required",
+                    "bot_running": False
+                })
+            
+            # Construct the full Google Meet URL
+            # If it's already a full URL, use it as is
+            if meeting_id.startswith("https://meet.google.com/"):
+                meeting_url = meeting_id
+            else:
+                # If it's just the meeting ID, construct the full URL
+                meeting_url = f"https://meet.google.com/{meeting_id}"
+            
+            # Store the current meeting ID (just the ID part, not the full URL)
+            current_meeting_id = meeting_id
             bot_state = "starting"
             last_join_time = time.time()
-
-            # Construct the full Google Meet URL
-            meeting_url = f"https://meet.google.com/{meeting_id}"
             
-            # Use run_in_threadpool for the synchronous start_meeting_bot function
-            started = await run_in_threadpool(start_meeting_bot, meeting_url)
+            # Start bot in background
+            async def start_bot_async():
+                global bot_state
+                try:
+                    await run_in_threadpool(start_meeting_bot, meeting_url)
+                    bot_state = "running"
+                except Exception as e:
+                    print(f"Error starting bot: {e}")
+                    bot_state = "idle"
+                    current_meeting_id = None
             
-            if started:
-                # Give browser time to fully initialize
-                await asyncio.sleep(2)
-                bot_state = "running"
-                
-                return create_json_response(
-                    {
-                        "status": "started",
-                        "message": "Bot joined the meeting successfully",
-                        "meeting_id": meeting_id,
-                        "meeting_url": meeting_url,
-                        "bot_state": bot_state
-                    }
-                )
-            else:
-                bot_state = "running"  # Already running case
-                return create_json_response(
-                    {
-                        "status": "already running",
-                        "message": "Bot is already running",
-                        "meeting_id": meeting_id,
-                        "meeting_url": meeting_url,
-                        "bot_state": bot_state
-                    }
-                )
-                
+            # Start the bot task
+            bot_join_task = asyncio.create_task(start_bot_async())
+            
+            return create_json_response({
+                "status": "success",
+                "message": f"Bot is starting to join meeting: {meeting_id}",
+                "meeting_id": meeting_id,
+                "meeting_url": meeting_url,
+                "bot_running": True,
+                "bot_state": "starting"
+            })
+            
         except Exception as e:
-            bot_state = "idle"  # Reset state on error
-            return create_json_response(
-                {
-                    "status": "error",
-                    "bot_running": False,
-                    "message": f"Error starting bot: {str(e)}",
-                    "bot_state": bot_state
-                },
-                status_code=500,
-            )
+            bot_state = "idle"
+            current_meeting_id = None
+            return create_json_response({
+                "status": "error",
+                "message": f"Error starting bot: {str(e)}",
+                "bot_running": False
+            }, status_code=500)
 
 @router.post("/sessions")
 async def create_session_with_file(
@@ -558,237 +552,258 @@ async def finalize_metadata(req: FinalizeMetadataRequest):
 
 @router.post("/process-meeting-end")
 async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
-    """Manually trigger the meeting end processing workflow with session_id and make bot leave"""
-    global last_join_time, bot_state
+    """Process meeting end, leave meeting, and generate answers for session questions"""
+    global bot_state, bot_join_task, current_meeting_id
     
     async with bot_startup_lock:
         try:
-            # Check if bot is in a valid state to stop
-            if bot_state == "idle":
-                return create_json_response(
-                    {
-                        "status": False,
-                        "message": "No bot is currently running",
-                        "bot_state": bot_state
-                    },
-                    status_code=400,
-                )
-            
-            if bot_state == "stopping":
-                return create_json_response(
-                    {
-                        "status": False,
-                        "message": "Bot is already being stopped. Please wait.",
-                        "bot_state": bot_state
-                    },
-                    status_code=409,
-                )
-
-            # If bot is still starting, wait for it to finish or timeout
-            if bot_state == "starting":
-                print("⏳ Bot is still starting. Waiting for it to complete...")
-                wait_count = 0
-                max_wait = 15  # Maximum 15 seconds to wait
-                
-                while bot_state == "starting" and wait_count < max_wait:
-                    await asyncio.sleep(1)
-                    wait_count += 1
-                
-                if bot_state == "starting":
-                    # Force reset if stuck in starting state
-                    bot_state = "idle"
-                    return create_json_response(
-                        {
-                            "status": False,
-                            "message": "Bot startup timed out. State reset.",
-                            "bot_state": bot_state
-                        },
-                        status_code=408,  # Request Timeout
-                    )
-
-            # Check if enough time has passed since joining
-            time_since_start = time.time() - last_join_time
-            if last_join_time > 0 and time_since_start < MIN_STARTUP_TIME:
-                wait_time = MIN_STARTUP_TIME - time_since_start
-                return create_json_response(
-                    {
-                        "status": False,
-                        "message": f"Please wait {wait_time:.1f} more seconds before ending the meeting. Bot is still stabilizing.",
-                        "retry_after": wait_time,
-                        "bot_state": bot_state
-                    },
-                    status_code=429,
-                )
-
-            # Set state to stopping
-            bot_state = "stopping"
-
+            # Get session_id from request
             session_id = req.session_id.strip() if req.session_id else ""
-            print(f"🔍 Debug: Received request with session_id: {session_id}")
+            if not session_id:
+                return create_json_response({
+                    "status": "error",
+                    "message": "Session ID is required",
+                    "bot_running": False,
+                    "bot_state": bot_state
+                }, status_code=400)
             
+            # Check if session exists
             session = sessions_db.get(session_id)
             if not session:
-                bot_state = "idle"  # Reset state
-                print(f"❌ Session {session_id} not found")
-                return create_json_response(
-                    {
-                        "status": False,
-                        "message": "Session not found",
-                        "debug_info": {
-                            "requested_session": session_id,
-                            "available_sessions": list(sessions_db.keys()),
-                        },
-                        "bot_state": bot_state
+                return create_json_response({
+                    "status": "error",
+                    "message": "Session not found",
+                    "debug_info": {
+                        "requested_session": session_id,
+                        "available_sessions": list(sessions_db.keys()),
                     },
-                    status_code=404,
-                )
-
-            print(f"✅ Session found. Attempting to leave meeting...")
-
-            # Properly shut down bot using run_in_threadpool
-            try:
-                from MeetBot import leave_meeting
-
-                leave_success = await run_in_threadpool(leave_meeting)
-                
-                # Give extra time for cleanup
-                await asyncio.sleep(2)
-                
-            except Exception as leave_err:
-                print(f"⚠️ Bot shutdown failed: {leave_err}")
-                leave_success = False
-
-            # Reset state to idle after cleanup
+                    "bot_state": bot_state
+                }, status_code=404)
+            
+            # Check if there's a meeting to end
+            if not current_meeting_id:
+                return create_json_response({
+                    "status": "error",
+                    "message": "No active meeting to end",
+                    "bot_running": False,
+                    "bot_state": bot_state
+                })
+            
+            meeting_to_end = current_meeting_id
+            
+            # If bot is starting, cancel the join task
+            if bot_state == "starting" and bot_join_task:
+                bot_join_task.cancel()
+                try:
+                    await bot_join_task
+                except asyncio.CancelledError:
+                    pass
+                bot_join_task = None
+            
+            # Set state to stopping
+            bot_state = "stopping"
+            
+            # Leave meeting
+            leave_success = await run_in_threadpool(leave_meeting)
+            
+            # Reset state and clear meeting ID
             bot_state = "idle"
-            last_join_time = 0
-
-            # Try to process transcript
+            bot_join_task = None
+            current_meeting_id = None
+            
+            # Process transcript and generate answers
             from cleaner import convert_chat_to_transcript, get_latest_transcript
-
+            
+            # Try to get transcript
             result = await run_in_threadpool(convert_chat_to_transcript)
             if not result:
                 result = await run_in_threadpool(get_latest_transcript)
-
-            meeting_id = "fch-wctx-ujo"
+            
             generated_count = 0
-
+            
             if result:
                 try:
+                    # Read transcript
                     transcript_path = os.path.join(BASE_DIR, result)
-                    if not os.path.exists(transcript_path):
-                        raise FileNotFoundError("Transcript file not found.")
+                    if os.path.exists(transcript_path):
+                        with open(transcript_path, "r", encoding="utf-8") as f:
+                            transcript_text = f.read()
+                        
+                        # Get questions for this session
+                        questions = questions_db.get(session_id, [])
+                        
+                        if questions and transcript_text.strip():
+                            from cleaner import llm
+                            
+                            # PARALLEL ANSWER GENERATION
+                            async def generate_answer_async(question, question_index):
+                                try:
+                                    prompt = f"""
+                                    You are analyzing a meeting transcript to answer specific questions.
+                                    
+                                    Question: {question.get('question', '')}
 
-                    with open(transcript_path, "r", encoding="utf-8") as f:
-                        transcript_text = f.read()
+                                    Meeting Transcript:
+                                    {transcript_text[:4000]}
 
-                    from cleaner import llm
-                    questions = questions_db.get(session_id, [])
+                                    Instructions:
+                                    - Only answer if the information is clearly and explicitly discussed in the transcript
+                                    - Provide a direct, factual answer in 1-2 sentences
+                                    - Do not mention the transcript or meeting in your answer
+                                    - Do not use phrases like "based on the transcript" or "according to the meeting"
+                                    - If the information is not discussed, simply state "Information not available"
+                                    """
 
-                    for question in questions:
-                        if question.get("source") == "manual" and question.get("answer"):
-                            continue
-
-                        try:
-                            prompt = f"""
-                            Based on the following meeting transcript, answer this specific question:
-
-                            Question: {question.get('question', '')}
-
-                            Meeting Transcript:
-                            {transcript_text[:3000]}
-
-                            Provide a clear, concise answer based only on the information in the transcript.
-                            If the answer is not found in the transcript or is unclear, respond with exactly "NOT_DISCUSSED".
-                            Keep the answer to 1-2 sentences maximum.
-                            Only provide an answer if the information is explicitly discussed in the transcript.
-                            """
-
-                            result_llm = await run_in_threadpool(llm.invoke, prompt)
-                            answer = (
-                                result_llm.content.strip()
-                                if hasattr(result_llm, "content")
-                                else str(result_llm).strip()
-                            )
-                            answer = answer.replace("\n", " ").strip()
-
-                            if any(
-                                token in answer.upper()
-                                for token in [
-                                    "NOT_DISCUSSED",
-                                    "NOT DISCUSSED", 
-                                    "UNKNOWN",
-                                    "UNCLEAR",
-                                    "NOT FOUND IN THE TRANSCRIPT",
-                                ]
-                            ):
-                                question["answer"] = ""
-                                question["source"] = ""
-                            else:
-                                question["answer"] = answer
-                                question["source"] = "generated"
-
-                            generated_count += 1
-
-                        except Exception as llm_error:
-                            print(f"⚠️ LLM error for question {question.get('id', 'unknown')}: {llm_error}")
-                            question["answer"] = ""
-                            question["source"] = ""
-                            generated_count += 1
-
-                    questions_db[session_id] = questions
-                    print(f"✅ Generated answers for {generated_count} questions")
-
-                except Exception as answer_error:
-                    print(f"❌ Error during answer generation: {answer_error}")
-
-                return create_json_response(
-                    {
-                        "status": True,
-                        "message": "Meeting processing completed successfully",
-                        "session_id": session_id,
-                        "meeting_id": meeting_id,
-                        "bot_left": leave_success,
-                        "transcript_file": result,
-                        "answers_generated": generated_count,
-                        "documents_generated": [],
-                        "bot_state": bot_state
-                    }
-                )
-
-            else:
-                return create_json_response(
-                    {
-                        "status": False,
-                        "message": "Bot left the meeting, but no transcript was captured. Captions may have been disabled or no one spoke.",
-                        "session_id": session_id,
-                        "meeting_id": meeting_id,
-                        "bot_left": leave_success,
-                        "transcript_file": None,
-                        "answers_generated": 0,
-                        "documents_generated": [],
-                        "bot_state": bot_state
-                    },
-                    status_code=200,
-                )
-
-        except Exception as e:
-            import traceback
+                                    result_llm = await run_in_threadpool(llm.invoke, prompt)
+                                    answer = (
+                                        result_llm.content.strip()
+                                        if hasattr(result_llm, "content")
+                                        else str(result_llm).strip()
+                                    )
+                                    
+                                    # Clean up the answer
+                                    answer = answer.replace("\n", " ").strip()
+                                    
+                                    # Function to check if answer is valid and meaningful
+                                    def is_valid_answer(ans):
+                                        if not ans or len(ans) < 15:
+                                            return False
+                                        
+                                        # Convert to lowercase for checking
+                                        ans_lower = ans.lower()
+                                        
+                                        # Reject answers that contain these phrases
+                                        reject_phrases = [
+                                            "no_answer",
+                                            "blank",
+                                            "not_discussed",
+                                            "information not available",
+                                            "not discussed",
+                                            "not mentioned",
+                                            "not found",
+                                            "not addressed",
+                                            "not covered",
+                                            "no information",
+                                            "not specified",
+                                            "not clear",
+                                            "unclear",
+                                            "not available",
+                                            "not explicitly",
+                                            "does not mention",
+                                            "not provided",
+                                            "not stated",
+                                            "not indicated",
+                                            "no details",
+                                            "not elaborated",
+                                            "not explained",
+                                            "transcript does not",
+                                            "meeting does not",
+                                            "conversation does not",
+                                            "discussion does not",
+                                            "based on the transcript",
+                                            "according to the meeting",
+                                            "from the transcript",
+                                            "in the transcript",
+                                            "the meeting transcript",
+                                            "are not explicitly discussed",
+                                            "is not explicitly discussed",
+                                            "focuses on",
+                                            "but does not mention",
+                                            "however",
+                                            "the conversation focuses"
+                                        ]
+                                        
+                                        # If answer contains any reject phrases, it's not valid
+                                        if any(phrase in ans_lower for phrase in reject_phrases):
+                                            return False
+                                        
+                                        # Check if it's mostly negative/explanatory text
+                                        negative_words = ["not", "no", "does", "doesn't", "cannot", "can't", "unable", "without"]
+                                        words = ans.split()
+                                        negative_count = sum(1 for word in words if word.lower() in negative_words)
+                                        
+                                        # If more than 30% of words are negative, likely not a real answer
+                                        if len(words) > 0 and (negative_count / len(words)) > 0.3:
+                                            return False
+                                        
+                                        return True
+                                    
+                                    if is_valid_answer(answer):
+                                        # Valid answer found
+                                        question["answer"] = answer
+                                        question["source"] = "transcript"
+                                        print(f"✅ Generated answer for: {question.get('question', '')[:50]}...")
+                                        return True
+                                    else:
+                                        # Not discussed - leave blank
+                                        question["answer"] = ""
+                                        question["source"] = "transcript"
+                                        print(f"⚠️ No valid answer for: {question.get('question', '')[:50]}...")
+                                        return False
+                                        
+                                except Exception as e:
+                                    print(f"❌ Error generating answer for question {question_index}: {e}")
+                                    question["answer"] = ""
+                                    question["source"] = "error"
+                                    return False
+                            
+                            # Collect questions that need processing
+                            tasks = []
+                            questions_to_process = []
+                            
+                            for i, question in enumerate(questions):
+                                # Skip if already answered manually
+                                if question.get("source") == "manual" and question.get("answer"):
+                                    continue
+                                
+                                tasks.append(generate_answer_async(question, i + 1))
+                                questions_to_process.append(question)
+                            
+                            # Run all tasks in parallel
+                            if tasks:
+                                print(f"🚀 Processing {len(tasks)} questions in parallel...")
+                                start_time = time.time()
+                                
+                                results = await asyncio.gather(*tasks, return_exceptions=True)
+                                
+                                # Count successful generations (only count non-empty answers)
+                                generated_count = sum(1 for result in results if result is True)
+                                
+                                end_time = time.time()
+                                processing_time = end_time - start_time
+                                
+                                print(f"✅ Completed {generated_count}/{len(tasks)} questions successfully in {processing_time:.2f} seconds")
+                            
+                            # Update questions in database
+                            questions_db[session_id] = questions
+                            
+                except Exception as e:
+                    print(f"❌ Error processing transcript: {e}")
             
-            # Reset state on any error
+            # Return success response
+            return create_json_response({
+                "status": "success",
+                "message": f"Successfully processed meeting end for session: {session_id}",
+                "session_id": session_id,
+                "meeting_id": meeting_to_end,
+                "bot_left": leave_success,
+                "transcript_file": result,
+                "answers_generated": generated_count,
+                "bot_running": False,
+                "bot_state": "idle"
+            })
+                
+        except Exception as e:
             bot_state = "idle"
-            last_join_time = 0
-
-            print(f"❌ Error in process_meeting_end: {str(e)}")
-            print(traceback.format_exc())
-            return create_json_response(
-                {
-                    "status": False,
-                    "message": f"Error processing meeting end: {str(e)}",
-                    "session_id": getattr(req, "session_id", "unknown"),
-                    "bot_state": bot_state
-                },
-                status_code=500,
-            )
+            bot_join_task = None
+            current_meeting_id = None
+            return create_json_response({
+                "status": "error",
+                "message": f"Error processing meeting end: {str(e)}",
+                "session_id": getattr(req, "session_id", "unknown"),
+                "bot_running": False,
+                "bot_state": "idle"
+            }, status_code=500)
 
 @router.get("/questions/generated/{session_id}")
 async def get_generated_questions(
