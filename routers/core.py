@@ -91,46 +91,66 @@ async def create_session_with_file(
     file_uploaded: bool = Form(False),
     file: UploadFile = File(None),
 ):
-    session_id = str(uuid.uuid4())
-    session_data = {
-        "project_id": project_id,
-        "meeting_title": meeting_title,
-        "stakeholders": stakeholders,
-        "session_objective": session_objective,
-        "requirement_type": requirement_type,
-        "followup_questions": followup_questions,
-        "file_uploaded": file_uploaded,
-        "session_id": session_id,
-    }
-    sessions_db[session_id] = session_data
-    questions = []
-    if file and file.filename.endswith(".pdf"):
-        path = os.path.join(BASE_DIR, f"{session_id}_{file.filename}")
-        contents = await file.read()
-        with open(path, "wb") as f:
-            f.write(contents)
-        text = extract_text_from_pdf(path)
-        os.remove(path)
-        if text.strip():
-            raw_qs = await run_in_threadpool(lambda: generate_questions_with_groq(text, num_questions=10))
-            questions = [
-                {
-                    "id": f"func-req-{i+1:03d}",
-                    "answer_key": f"q{i+1:03d}",
-                    "question": q,
-                    "category": "Functional Requirement",
-                    "dataFormat": "json",
-                    "answer": "",
-                    "source": ""
-                } for i, q in enumerate(raw_qs)
-            ]
-            questions_db[session_id] = questions
-    return create_json_response({
-        "status": "success",
-        "message": "Session created",
-        **session_data,
-        "data": questions
-    })
+    try:
+        # Basic validation
+        if not project_id.strip() or not meeting_title.strip():
+            return create_json_response({
+                "status": "error",
+                "message": "Project ID and meeting title are required"
+            }, status_code=400)
+        session_id = str(uuid.uuid4())
+        # Add timestamp to session data
+        session_data = {
+            "project_id": project_id,
+            "meeting_title": meeting_title,
+            "stakeholders": stakeholders,
+            "session_objective": session_objective,
+            "requirement_type": requirement_type,
+            "followup_questions": followup_questions,
+            "file_uploaded": file_uploaded,
+            "session_id": session_id,
+            "created_at": datetime.now().strftime("%Y-%m-%d")  # Add timestamp
+        }
+        sessions_db[session_id] = session_data
+        questions = []
+        if file and file.filename.endswith(".pdf"):
+            try:
+                path = os.path.join(BASE_DIR, f"{session_id}_{file.filename}")
+                contents = await file.read()
+                with open(path, "wb") as f:
+                    f.write(contents)
+                text = extract_text_from_pdf(path)
+                os.remove(path)
+                if text.strip():
+                    raw_qs = await run_in_threadpool(lambda: generate_questions_with_groq(text, num_questions=10))
+                    questions = [
+                        {
+                            "id": f"func-req-{i+1:03d}",
+                            "answer_key": f"q{i+1:03d}",
+                            "question": q,
+                            "category": "Functional Requirement",
+                            "dataFormat": "json",
+                            "answer": "",
+                            "source": ""
+                        } for i, q in enumerate(raw_qs)
+                    ]
+                    questions_db[session_id] = questions
+            except Exception as file_error:
+                return create_json_response({
+                    "status": "error",
+                    "message": f"File processing error: {str(file_error)}"
+                }, status_code=500)
+        return create_json_response({
+            "status": "success",
+            "message": "Session created",
+            **session_data,
+            "data": questions
+        })
+    except Exception as e:
+        return create_json_response({
+            "status": "error",
+            "message": f"Error creating session: {str(e)}"
+        }, status_code=500)
 
 @router.get("/cleaned-transcript")
 async def get_cleaned_transcript_json(
@@ -954,43 +974,64 @@ async def create_project(req: ProjectCreateRequest):
             },
             status_code=500,
         )
-
 @router.get("/get_all_sessions")
-async def get_all_sessions():
-    """Get all session IDs with their respective session details"""
+async def get_all_sessions(project_id: str = Query(..., description="Project ID to filter sessions")):
+    """Get all session IDs with their respective session details for a specific project"""
     try:
-        # Check if there are any sessions
-        if not sessions_db:
+        # Validate project_id
+        if not project_id or not project_id.strip():
             return create_json_response(
                 {
-                    "status": True,
-                    "message": "No sessions found",
-                    "total_sessions": 0,
-                    "sessions": {}
-                }
+                    "status": False,
+                    "message": "Project ID is required",
+                    "totalSessions": 0,
+                    "data": []
+                },
+                status_code=400
             )
-        
-        # Return all sessions with their details
-        return create_json_response(
-            {
+        project_id = project_id.strip()
+        # Filter sessions by project_id
+        filtered_sessions = {
+            session_id: session_data
+            for session_id, session_data in sessions_db.items()
+            if session_data.get("project_id") == project_id
+        }
+        if not filtered_sessions:
+            return create_json_response({
                 "status": True,
-                "message": f"Retrieved {len(sessions_db)} sessions successfully",
-                "total_sessions": len(sessions_db),
-                "sessions": sessions_db
+                "message": "No sessions found for this project",
+                "totalSessions": 0,
+                "data": []
+            })
+        # Format session data for response
+        sessions_list = []
+        for session_id, session_data in filtered_sessions.items():
+            session_info = {
+                "projectId": session_data.get("project_id"),
+                "meetingTitle": session_data.get("meeting_title"),
+                "stakeholders": session_data.get("stakeholders"),
+                "sessionObjective": session_data.get("session_objective"),
+                "requirementType": session_data.get("requirement_type"),
+                "followupQuestions": session_data.get("followup_questions"),
+                "fileUploaded": session_data.get("file_uploaded"),
+                "sessionId": session_id,
+                "timestamp": session_data.get("created_at", datetime.now().strftime("%Y-%m-%d"))  # Use session timestamp or current date
             }
-        )
-        
+            sessions_list.append(session_info)
+        return create_json_response({
+            "status": True,
+            "message": "Sessions retrieved successfully",
+            "totalSessions": len(sessions_list),
+            "data": sessions_list
+        })
     except Exception as e:
-        return create_json_response(
-            {
-                "status": False,
-                "error_code": "UNEXPECTED_ERROR",
-                "message": f"Error retrieving sessions: {str(e)}",
-                "total_sessions": 0,
-                "sessions": {}
-            },
-            status_code=500,
-        )
+        return create_json_response({
+            "status": False,
+            "message": f"Error retrieving sessions: {str(e)}",
+            "totalSessions": 0,
+            "data": []
+        }, status_code=500)
+
 
 @router.get("/projects")
 async def get_all_projects():
