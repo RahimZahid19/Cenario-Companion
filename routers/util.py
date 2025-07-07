@@ -16,7 +16,7 @@ def get_requirements(project_id: str = Query(..., description="Pinecone namespac
         parsed_data = parse_csv_to_json(csv_output, project_id)
         return {
             "status": "success",
-            "message": f"Requirements generated for namespace '{project_id}'",
+            "message": f"Requirements generated",
             "data": parsed_data
         }
     except Exception as e:
@@ -35,7 +35,7 @@ def get_epics(project_id: str = Query(..., description="Pinecone namespace to us
         )
         chain = build_retrieval_chain(project_id)
         csv_output = chain.invoke({"question": question})
-        parsed_data = parse_csv_to_json(csv_output)
+        parsed_data = parse_csv_to_json(csv_output, project_id)
         return {
             "status": "success",
             "message": f"Epics generated",

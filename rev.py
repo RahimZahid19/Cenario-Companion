@@ -1,4 +1,6 @@
 import os
+import csv
+import io
 from dotenv import load_dotenv
 from pinecone import Pinecone
 from langchain.chat_models import init_chat_model
@@ -7,10 +9,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableParallel
 from langchain_pinecone import PineconeVectorStore
 from langchain_cohere import CohereEmbeddings
-import csv
-import io
 
-# Load API keys and settings from .env
+# Load environment variables
 load_dotenv()
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
@@ -20,7 +20,7 @@ INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(INDEX_NAME)
 
-# Use Cohere embedding model (1024-d)
+# Initialize Cohere embedding model (1024-d)
 embedding_model = CohereEmbeddings(
     cohere_api_key=COHERE_API_KEY,
     model="embed-english-v3.0"
@@ -62,20 +62,41 @@ Only output the CSV table. Do not include any additional explanation or text. If
     )
     return chain
 
-# Parse CSV to JSON
+# Parse CSV to JSON using meeting_title instead of session ID
 def parse_csv_to_json(csv_text: str, namespace=None):
+    meeting_title = namespace  # fallback
+
+    try:
+        # Attempt to fetch metadata from a known chunk ID
+        chunk_id = f"{namespace}_chunk_0"
+        fetch = index.fetch(ids=[chunk_id], namespace=namespace) # Debug print
+
+        if fetch and hasattr(fetch, "vectors") and chunk_id in fetch.vectors:
+            vector_obj = fetch.vectors[chunk_id]
+            metadata = getattr(vector_obj, 'metadata', {})
+            meeting_title = metadata.get('meeting_title', namespace) if isinstance(metadata, dict) else namespace
+    except Exception as e:
+        print(f"Warning: Could not fetch meeting_title from Pinecone: {e}")
+
+    # Parse CSV string to list of camelCase dictionaries
     reader = csv.DictReader(io.StringIO(csv_text))
     data = []
-    for row in reader:
-        if "Session" in row and namespace:
-            row["Session"] = namespace
-        data.append(row)
+    for idx, row in enumerate(reader, start=1):
+        new_row = {
+            "id": f"REQ-{idx:03d}",
+            "description": row.get("Description", ""),
+            "category": row.get("Category", ""),
+            "priority": row.get("Priority", ""),
+            "session": meeting_title,  # Use meeting_title here
+            "sources": row.get("Sources", "")
+        }
+        data.append(new_row)
     return data
 
-# Parse user stories from raw output
+# Parse user stories output into a list of structured dicts
 def parse_user_stories(text: str):
     return [
-        {"user_story": line.strip()}
+        {"userStory": line.strip()}
         for line in text.splitlines()
         if line.strip().startswith("•")
     ]
