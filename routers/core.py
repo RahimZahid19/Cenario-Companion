@@ -6,6 +6,7 @@ from bot1 import extract_text_from_pdf, generate_questions_with_groq
 from cleaner import convert_chat_to_transcript, get_latest_transcript
 from MeetBot import start_meeting_bot, leave_meeting
 from Metadata import ProjectCreateRequest, FinalizeMetadataRequest, Metadata, set_full_metadata
+from VectorDatabaseStoring import read_transcript, get_embedding, upsert_to_pinecone, chunk_text, upsert_question_answer
 import uuid, os, asyncio
 from typing import List
 from datetime import datetime
@@ -133,9 +134,7 @@ async def create_session_with_file(
                 "status": "error",
                 "message": "Project ID and meeting title are required"
             }, status_code=400)
-        
         session_id = str(uuid.uuid4())
-        
         # Add timestamp to session data
         session_data = {
             "project_id": project_id,
@@ -150,7 +149,6 @@ async def create_session_with_file(
         }
         sessions_db[session_id] = session_data
         questions = []
-        
         if file and file.filename.endswith(".pdf"):
             try:
                 path = os.path.join(BASE_DIR, f"{session_id}_{file.filename}")
@@ -178,14 +176,12 @@ async def create_session_with_file(
                     "status": "error",
                     "message": f"File processing error: {str(file_error)}"
                 }, status_code=500)
-        
         return create_json_response({
             "status": "success",
             "message": "Session created",
             **session_data,
             "data": questions
         })
-        
     except Exception as e:
         return create_json_response({
             "status": "error",
@@ -525,34 +521,43 @@ async def finalize_metadata(req: FinalizeMetadataRequest):
             
         print("Available session IDs:", list(sessions_db.keys()))
         print("Requested session_id:", req.session_id)
+
         session = sessions_db.get(req.session_id)
         if not session:
             return create_json_response({"error": "Session not found"}, status_code=404)
+
         project_id = session.get("project_id")
         project = projects_db.get(project_id, {})
         manual_fields = {**project, **session}
+
         metadata = Metadata(manual_fields)
         metadata.generate_after_meeting(req.transcript_path)
-        final_metadata = metadata.get_metadata(chunk_index=req.chunk_index)
-        
-        # Store globally for backend access
+
+        # Read and chunk the transcript
+        transcript_text = read_transcript(req.transcript_path)
+        chunks = chunk_text(transcript_text)
+
+        for idx, chunk in enumerate(chunks):
+            try:
+                final_metadata = metadata.get_metadata(chunk_index=idx)
+                final_metadata["text"] = chunk  # optional: store the chunk text itself
+                embedding = get_embedding(chunk)
+                upsert_to_pinecone(embedding, final_metadata)
+            except Exception as e:
+                print(f"Embedding or upsert failed for chunk {idx}: {e}")
+
+        # Store last chunk’s metadata globally
         global latest_metadata
         latest_metadata = final_metadata
-        
-        print("=== FULL METADATA ===")
-        print(final_metadata)
-        print("=== END OF FULL METADATA ===")
-        
-        # Send full metadata to Metadata.py
+
         set_full_metadata(final_metadata)
-        
-        # Return the metadata - this is what you'll get from the API call
-        return create_json_response(final_metadata)
+
+        return create_json_response({"message": "Metadata finalized and all chunks upserted", "chunks": len(chunks)})
+
     except Exception as e:
         return create_json_response(
             {"error": f"Error finalizing metadata: {str(e)}"}, status_code=500
         )
-
 
 @router.post("/process-meeting-end")
 async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
@@ -804,6 +809,117 @@ async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
             return create_json_response({
                 "status": "error",
                 "message": f"Error processing meeting end: {str(e)}",
+                        result_llm = await run_in_threadpool(llm.invoke, prompt)
+                        answer = (
+                            result_llm.content.strip()
+                            if hasattr(result_llm, "content")
+                            else str(result_llm).strip()
+                        )
+                        answer = answer.replace("\n", " ").strip()
+
+                        if any(
+                            token in answer.upper()
+                            for token in [
+                                "NOT_DISCUSSED",
+                                "NOT DISCUSSED",
+                                "UNKNOWN",
+                                "UNCLEAR",
+                                "NOT FOUND IN THE TRANSCRIPT",
+                            ]
+                        ):
+                            question["answer"] = ""
+                            question["source"] = ""
+                        else:
+                            question["answer"] = answer
+                            question["source"] = "generated"
+
+                        generated_count += 1
+
+                    except Exception as llm_error:
+                        print(
+                            f"⚠️ LLM error for question {question.get('id', 'unknown')}: {llm_error}"
+                        )
+                        question["answer"] = ""
+                        question["source"] = ""
+                        generated_count += 1
+
+                questions_db[session_id] = questions
+                print(f"✅ Generated answers for {generated_count} questions")
+
+                answered_questions = [
+                    q for q in questions if q.get("answer") and q.get("source") == "generated"
+                ]
+
+                project_id = sessions_db[session_id]["project_id"]
+
+                for idx, q in enumerate(answered_questions):
+                    qa_pair = f"Q: {q['question']} A: {q['answer']}"
+                    try:
+                        embedding = get_embedding(qa_pair)
+                    except Exception as embed_err:
+                        print(f"❌ Embedding failed for Q{idx}: {embed_err}")
+                        continue
+
+                    metadata = {
+                        "project_id": project_id,
+                        "session_id": session_id,
+                        "question": q["question"],
+                        "answer": q["answer"],
+                        "source": "meeting",
+                        "type": "qa_pair",
+                        "qa_index": idx
+                    }
+
+                    # Use UUID or a chunked ID if needed
+                    vector_id = f"{session_id}_qa_{idx}_{str(uuid.uuid4())[:8]}"
+
+                    upsert_question_answer(
+                        embedding=embedding,
+                        metadata=metadata,
+                        vector_id=vector_id,
+                        namespace=project_id  # project_id used as namespace
+                    )                
+
+            except Exception as answer_error:
+                print(f"❌ Error during answer generation: {answer_error}")
+
+            return create_json_response(
+                {
+                    "status": True,
+                    "message": "Meeting processing completed successfully",
+                    "session_id": session_id,
+                    "meeting_id": meeting_id,
+                    "bot_left": leave_success,
+                    "transcript_file": result,
+                    "answers_generated": generated_count,
+                    "documents_generated": [],
+                }
+            )
+
+        else:
+            return create_json_response(
+                {
+                "status": False,
+                    "message": "Bot left the meeting, but no transcript was captured. Captions may have been disabled or no one spoke.",
+                "session_id": session_id,
+                "meeting_id": meeting_id,
+                "bot_left": leave_success,
+                "transcript_file": None,
+                "answers_generated": 0,
+                    "documents_generated": [],
+                },
+                status_code=200,
+            )
+
+    except Exception as e:
+        import traceback
+
+        print(f"❌ Error in process_meeting_end: {str(e)}")
+        print(traceback.format_exc())
+        return create_json_response(
+            {
+            "status": False,
+            "message": f"Error processing meeting end: {str(e)}",
                 "session_id": getattr(req, "session_id", "unknown"),
                 "bot_running": False,
                 "bot_state": "idle"
@@ -1072,11 +1188,13 @@ async def create_project(req: ProjectCreateRequest):
             **project_data
         })
     except Exception as e:
-        return create_json_response({
-            "status": "error",
-            "message": f"Error creating project: {str(e)}"
-        }, status_code=500)
-
+        return create_json_response(
+            {
+                "status": "error",
+                "message": f"Error creating project: {str(e)}"
+            },
+            status_code=500,
+        )
 @router.get("/get_all_sessions")
 async def get_all_sessions(project_id: str = Query(..., description="Project ID to filter sessions")):
     """Get all session IDs with their respective session details for a specific project"""
@@ -1092,16 +1210,13 @@ async def get_all_sessions(project_id: str = Query(..., description="Project ID 
                 },
                 status_code=400
             )
-        
         project_id = project_id.strip()
-        
         # Filter sessions by project_id
         filtered_sessions = {
-            session_id: session_data 
-            for session_id, session_data in sessions_db.items() 
+            session_id: session_data
+            for session_id, session_data in sessions_db.items()
             if session_data.get("project_id") == project_id
         }
-        
         if not filtered_sessions:
             return create_json_response({
                 "status": True,
@@ -1109,7 +1224,6 @@ async def get_all_sessions(project_id: str = Query(..., description="Project ID 
                 "totalSessions": 0,
                 "data": []
             })
-        
         # Format session data for response
         sessions_list = []
         for session_id, session_data in filtered_sessions.items():
@@ -1125,14 +1239,12 @@ async def get_all_sessions(project_id: str = Query(..., description="Project ID 
                 "timestamp": session_data.get("created_at", datetime.now().strftime("%Y-%m-%d"))  # Use session timestamp or current date
             }
             sessions_list.append(session_info)
-        
         return create_json_response({
             "status": True,
             "message": "Sessions retrieved successfully",
             "totalSessions": len(sessions_list),
             "data": sessions_list
         })
-        
     except Exception as e:
         return create_json_response({
             "status": False,
@@ -1140,6 +1252,7 @@ async def get_all_sessions(project_id: str = Query(..., description="Project ID 
             "totalSessions": 0,
             "data": []
         }, status_code=500)
+
 
 @router.get("/projects")
 async def get_all_projects():

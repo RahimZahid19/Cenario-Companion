@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import core, analytics
+from routers import core, analytics, util
 import warnings
 
 warnings.filterwarnings("ignore", category=ResourceWarning)
@@ -17,11 +17,11 @@ app.add_middleware(
 
 app.include_router(core.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
-
+app.include_router(util.router, prefix="/api")
 
 def main():
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
 
 
 if __name__ == "__main__":
