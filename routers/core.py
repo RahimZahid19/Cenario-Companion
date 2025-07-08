@@ -12,6 +12,7 @@ from datetime import datetime
 from fastapi.responses import JSONResponse, PlainTextResponse
 import re
 import time
+from datetime import datetime
 
 
 
@@ -132,8 +133,10 @@ async def create_session_with_file(
                 "status": "error",
                 "message": "Project ID and meeting title are required"
             }, status_code=400)
-
+        
         session_id = str(uuid.uuid4())
+        
+        # Add timestamp to session data
         session_data = {
             "project_id": project_id,
             "meeting_title": meeting_title,
@@ -143,6 +146,7 @@ async def create_session_with_file(
             "followup_questions": followup_questions,
             "file_uploaded": file_uploaded,
             "session_id": session_id,
+            "created_at": datetime.now().strftime("%Y-%m-%d")  # Add timestamp
         }
         sessions_db[session_id] = session_data
         questions = []
@@ -1083,67 +1087,59 @@ async def get_all_sessions(project_id: str = Query(..., description="Project ID 
                 {
                     "status": False,
                     "message": "Project ID is required",
-                    "total_sessions": 0,
-                    "sessions": {}
+                    "totalSessions": 0,
+                    "data": []
                 },
                 status_code=400
             )
         
         project_id = project_id.strip()
         
-        # Check if there are any sessions
-        if not sessions_db:
-            return create_json_response(
-                {
-                    "status": True,
-                    "message": "No sessions found",
-                    "project_id": project_id,
-                    "total_sessions": 0,
-                    "sessions": {}
-                }
-            )
-        
         # Filter sessions by project_id
-        filtered_sessions = {}
-        for session_id, session_data in sessions_db.items():
-            if session_data.get("project_id") == project_id:
-                filtered_sessions[session_id] = session_data
+        filtered_sessions = {
+            session_id: session_data 
+            for session_id, session_data in sessions_db.items() 
+            if session_data.get("project_id") == project_id
+        }
         
-        # Check if any sessions found for this project
         if not filtered_sessions:
-            return create_json_response(
-                {
-                    "status": True,
-                    "message": f"No sessions found for project: {project_id}",
-                    "project_id": project_id,
-                    "total_sessions": 0,
-                    "sessions": {},
-                    "available_projects": list(set(session.get("project_id") for session in sessions_db.values() if session.get("project_id")))
-                }
-            )
-        
-        # Return filtered sessions
-        return create_json_response(
-            {
+            return create_json_response({
                 "status": True,
-                "message": f"Sessions retrieved successfully for project: {project_id}",
-                "project_id": project_id,
-                "total_sessions": len(filtered_sessions),
-                "sessions": filtered_sessions
+                "message": "No sessions found for this project",
+                "totalSessions": 0,
+                "data": []
+            })
+        
+        # Format session data for response
+        sessions_list = []
+        for session_id, session_data in filtered_sessions.items():
+            session_info = {
+                "projectId": session_data.get("project_id"),
+                "meetingTitle": session_data.get("meeting_title"),
+                "stakeholders": session_data.get("stakeholders"),
+                "sessionObjective": session_data.get("session_objective"),
+                "requirementType": session_data.get("requirement_type"),
+                "followupQuestions": session_data.get("followup_questions"),
+                "fileUploaded": session_data.get("file_uploaded"),
+                "sessionId": session_id,
+                "timestamp": session_data.get("created_at", datetime.now().strftime("%Y-%m-%d"))  # Use session timestamp or current date
             }
-        )
+            sessions_list.append(session_info)
+        
+        return create_json_response({
+            "status": True,
+            "message": "Sessions retrieved successfully",
+            "totalSessions": len(sessions_list),
+            "data": sessions_list
+        })
         
     except Exception as e:
-        return create_json_response(
-            {
-                "status": False,
-                "message": f"Error retrieving sessions: {str(e)}",
-                "project_id": project_id if 'project_id' in locals() else None,
-                "total_sessions": 0,
-                "sessions": {}
-            },
-            status_code=500,
-        )
+        return create_json_response({
+            "status": False,
+            "message": f"Error retrieving sessions: {str(e)}",
+            "totalSessions": 0,
+            "data": []
+        }, status_code=500)
 
 @router.get("/projects")
 async def get_all_projects():
