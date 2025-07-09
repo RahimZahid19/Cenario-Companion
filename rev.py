@@ -117,10 +117,89 @@ def parse_csv_to_json(csv_text: str, project_id: str, session_id: Optional[str] 
 
     return data
 
-# Parse user stories (optional)
-def parse_user_stories(text: str):
-    return [
-        {"userStory": line.strip()}
-        for line in text.splitlines()
-        if line.strip().startswith("•")
-    ]
+def fetch_requirement_descriptions(project_id, session_id):
+    namespace = project_id
+    filter_query = {"type": {"$eq": "requirement"}}
+    if session_id:
+        filter_query["session_id"] = {"$eq": session_id}
+
+    response = index.query(
+        namespace=namespace,
+        top_k=50,
+        vector=[0.0] * 1024,  # Dummy vector to enable filtering
+        filter=filter_query,
+        include_metadata=True
+    )
+
+    return [match['metadata']['description'] for match in response['matches'] if 'description' in match['metadata']]
+
+
+def generate_and_group_epics(descriptions, project_id, session_id):
+    prompt = ChatPromptTemplate.from_template(
+        """
+        You are an AI product analyst. Based on the following requirements:
+
+        {requirements}
+
+        Group similar requirements under epics. Each epic must include:
+        - Epic_Id (e.g. 1, 1.1, 2)
+        - Epic_Title
+
+        Respond ONLY with a CSV formatted as follows (exact headers required, no extra spaces or commentary):
+        Epic_Id,Epic_Title
+        1,Your First Epic Title
+        2,Your Second Epic Title
+        """
+    )
+
+    chain = prompt | llm | StrOutputParser()
+    combined_reqs = "\n".join(f"- {r}" for r in descriptions)
+    csv_output = chain.invoke({"requirements": combined_reqs})
+
+    csv_lines = csv_output.strip().splitlines()
+    clean_lines = [line for line in csv_lines if "Epic_Id" in line or "," in line]
+    cleaned_csv = "\n".join(clean_lines)
+
+    return parse_csv_to_grouped_json(cleaned_csv, descriptions, project_id, session_id)
+
+
+def parse_csv_to_grouped_json(csv_str, descriptions, project_id, session_id):
+    csv_str = csv_str.strip()
+    reader = csv.DictReader(io.StringIO(csv_str))
+    
+    expected_headers = {"Epic_Id", "Epic_Title"}
+    if not expected_headers.issubset(set(reader.fieldnames or [])):
+        raise ValueError(f"Invalid CSV headers. Expected: {expected_headers}, Got: {reader.fieldnames}")
+    
+    grouped = {}
+    id_counter = 1
+    desc_index = 0
+
+    for row in reader:
+        title = row["Epic_Title"].strip()
+
+        if title not in grouped:
+            grouped[title] = {
+                "id": str(id_counter),
+                "title": title,
+                "project_id": project_id,
+                "session_id": session_id,
+                "user_stories": []
+            }
+            id_counter += 1
+
+        if desc_index >= len(descriptions):
+            break
+
+        desc = descriptions[desc_index].strip()
+        story_id = f"{grouped[title]['id']}.{len(grouped[title]['user_stories']) + 1}"
+
+        grouped[title]["user_stories"].append({
+    "id": story_id,
+    "question": desc,
+    "answers": []  # Empty list instead of placeholder
+})
+
+        desc_index += 1
+
+    return [epic for epic in grouped.values() if epic["user_stories"]]
