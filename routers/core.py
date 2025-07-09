@@ -452,64 +452,6 @@ async def get_cleaned_transcript_json(
             status_code=500,
         )
 
-# @router.post("/questions/generated")
-# async def generate_questions_from_pdf(
-#     file: UploadFile = File(...),
-#     session_id: str = Query(..., description="Session ID to associate questions with"),
-# ):
-#     # Check if session exists and has file_uploaded flag
-#     session = sessions_db.get(session_id)
-#     if not session:
-#         return create_json_response({"error": "Session not found"}, status_code=404)
-    
-#     if not session.get("file_uploaded", False):
-#         return create_json_response(
-#             {
-#             "error": "File upload not enabled for this session. Please set file_uploaded to true when creating the session."
-#             },
-#             status_code=400,
-#         )
-
-#     if not file.filename.lower().endswith(".pdf"):
-#         return create_json_response(
-#             {"error": "Only PDF files are supported."}, status_code=400
-#         )
-#     try:
-#         contents = await file.read()
-#         temp_path = os.path.join(BASE_DIR, file.filename)
-#         with open(temp_path, "wb") as f:
-#             f.write(contents)
-#         text = extract_text_from_pdf(temp_path)
-#         os.remove(temp_path)
-#         questions = generate_questions_with_groq(text, num_questions=10)
-
-#         # Format questions as required
-#         data_formats = ["json", "xml", "json", "csv"]
-#         questions = [
-#             {
-#                 "id": f"func-req-{idx+1:03d}",
-#                 "answer_key": f"q{idx+1:03d}",
-#                 "question": q,
-#                 "category": "Functional Requirement",
-#                 "dataFormat": data_formats[idx % len(data_formats)],
-#                 "answer": "",
-#                 "source": "",
-#             }
-#             for idx, q in enumerate(questions)
-#         ]
-        
-#         # Store questions in memory
-#         questions_db[session_id] = questions
-        
-#         response = {
-#             "status": "success",
-#             "message": "Questions generated and stored successfully.",
-#             **session,
-#             "data": questions,
-#         }
-#         return create_json_response(response)
-#     except Exception as e:
-#         return create_json_response({"error": str(e)}, status_code=500)
 
 @router.post("/finalize_metadata")
 async def finalize_metadata(req: FinalizeMetadataRequest):
@@ -801,7 +743,7 @@ async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
                 "bot_running": False,
                 "bot_state": "idle"
             })
-                
+            
         except Exception as e:
             bot_state = "idle"
             bot_join_task = None
@@ -809,118 +751,6 @@ async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
             return create_json_response({
                 "status": "error",
                 "message": f"Error processing meeting end: {str(e)}",
-                        result_llm = await run_in_threadpool(llm.invoke, prompt)
-                        answer = (
-                            result_llm.content.strip()
-                            if hasattr(result_llm, "content")
-                            else str(result_llm).strip()
-                        )
-                        answer = answer.replace("\n", " ").strip()
-
-                        if any(
-                            token in answer.upper()
-                            for token in [
-                                "NOT_DISCUSSED",
-                                "NOT DISCUSSED",
-                                "UNKNOWN",
-                                "UNCLEAR",
-                                "NOT FOUND IN THE TRANSCRIPT",
-                            ]
-                        ):
-                            question["answer"] = ""
-                            question["source"] = ""
-                        else:
-                            question["answer"] = answer
-                            question["source"] = "generated"
-
-                        generated_count += 1
-
-                    except Exception as llm_error:
-                        print(
-                            f"⚠️ LLM error for question {question.get('id', 'unknown')}: {llm_error}"
-                        )
-                        question["answer"] = ""
-                        question["source"] = ""
-                        generated_count += 1
-
-                questions_db[session_id] = questions
-                print(f"✅ Generated answers for {generated_count} questions")
-
-                answered_questions = [
-                    q for q in questions if q.get("answer") and q.get("source") == "generated"
-                ]
-
-                project_id = sessions_db[session_id]["project_id"]
-
-                for idx, q in enumerate(answered_questions):
-                    qa_pair = f"Q: {q['question']} A: {q['answer']}"
-                    try:
-                        embedding = get_embedding(qa_pair)
-                    except Exception as embed_err:
-                        print(f"❌ Embedding failed for Q{idx}: {embed_err}")
-                        continue
-
-                    metadata = {
-                        "project_id": project_id,
-                        "session_id": session_id,
-                        "question": q["question"],
-                        "answer": q["answer"],
-                        "source": "meeting",
-                        "type": "qa_pair",
-                        "qa_index": idx
-                    }
-
-                    # Use UUID or a chunked ID if needed
-                    vector_id = f"{session_id}_qa_{idx}_{str(uuid.uuid4())[:8]}"
-
-                    upsert_question_answer(
-                        embedding=embedding,
-                        metadata=metadata,
-                        vector_id=vector_id,
-                        namespace=project_id  # project_id used as namespace
-                    )                
-
-            except Exception as answer_error:
-                print(f"❌ Error during answer generation: {answer_error}")
-
-            return create_json_response(
-                {
-                    "status": True,
-                    "message": "Meeting processing completed successfully",
-                    "session_id": session_id,
-                    "meeting_id": meeting_id,
-                    "bot_left": leave_success,
-                    "transcript_file": result,
-                    "answers_generated": generated_count,
-                    "documents_generated": [],
-                }
-            )
-
-        else:
-            return create_json_response(
-                {
-                "status": False,
-                    "message": "Bot left the meeting, but no transcript was captured. Captions may have been disabled or no one spoke.",
-                "session_id": session_id,
-                "meeting_id": meeting_id,
-                "bot_left": leave_success,
-                "transcript_file": None,
-                "answers_generated": 0,
-                    "documents_generated": [],
-                },
-                status_code=200,
-            )
-
-    except Exception as e:
-        import traceback
-
-        print(f"❌ Error in process_meeting_end: {str(e)}")
-        print(traceback.format_exc())
-        return create_json_response(
-            {
-            "status": False,
-            "message": f"Error processing meeting end: {str(e)}",
-                "session_id": getattr(req, "session_id", "unknown"),
                 "bot_running": False,
                 "bot_state": "idle"
             }, status_code=500)

@@ -16,5 +16,14 @@ groq>=0.4.0
 sentence-transformers>=2.2.2
 fastapi==0.104.1
 uvicorn==0.24.0
-python-multipartpython-docx
+python-multipart
+python-docx
 nltk
+lanchain-cohere
+cohere
+psutil
+asyncio
+platform
+subprocess
+signal
+
