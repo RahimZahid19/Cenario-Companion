@@ -472,11 +472,19 @@ async def finalize_metadata(req: FinalizeMetadataRequest):
         project = projects_db.get(project_id, {})
         manual_fields = {**project, **session}
 
+        # Automatically get the latest transcript file
+        from cleaner import get_latest_transcript
+        latest_transcript = get_latest_transcript()
+        if not latest_transcript:
+            return create_json_response({"error": "No transcript file found"}, status_code=404)
+        
+        transcript_path = os.path.join(BASE_DIR, latest_transcript)
+
         metadata = Metadata(manual_fields)
-        metadata.generate_after_meeting(req.transcript_path)
+        metadata.generate_after_meeting(transcript_path)
 
         # Read and chunk the transcript
-        transcript_text = read_transcript(req.transcript_path)
+        transcript_text = read_transcript(transcript_path)
         chunks = chunk_text(transcript_text)
 
         for idx, chunk in enumerate(chunks):
@@ -494,7 +502,11 @@ async def finalize_metadata(req: FinalizeMetadataRequest):
 
         set_full_metadata(final_metadata)
 
-        return create_json_response({"message": "Metadata finalized and all chunks upserted", "chunks": len(chunks)})
+        return create_json_response({
+            "message": "Metadata finalized and all chunks upserted", 
+            "chunks": len(chunks),
+            "transcript_file": latest_transcript
+        })
 
     except Exception as e:
         return create_json_response(
@@ -998,17 +1010,40 @@ async def answer_question_from_transcript(
 
 
 @router.post("/projects")
-async def create_project(req: ProjectCreateRequest):
-    """Create a new project"""
+async def create_project(
+    project_title: str = Form(...),
+    project_status: str = Form(...),
+    client_name: str = Form(...),
+    proposal_deadline: str = Form(...),
+    engagement_type: str = Form(...),
+    industry: str = Form(...),
+    software_type: str = Form(...),
+    client_introduction: str = Form(...)
+):
+    """Create a new project using form data"""
     try:
-        if not req:
+        # Basic validation
+        if not project_title.strip() or not client_name.strip():
             return create_json_response({
                 "status": "error",
-                "message": "Request body is required"
+                "message": "Project title and client name are required"
             }, status_code=400)
             
         project_id = str(uuid.uuid4())
-        project_data = req.dict()
+        
+        # Create project data from form fields
+        project_data = {
+            "project_title": project_title.strip(),
+            "project_status": project_status.strip(),
+            "client_name": client_name.strip(),
+            "proposal_deadline": proposal_deadline.strip(),
+            "engagement_type": engagement_type.strip(),
+            "industry": industry.strip(),
+            "software_type": software_type.strip(),
+            "client_introduction": client_introduction.strip(),
+            "created_at": datetime.now().strftime("%Y-%m-%d")  # Add timestamp
+        }
+        
         projects_db[project_id] = project_data
         
         return create_json_response({
@@ -1017,6 +1052,7 @@ async def create_project(req: ProjectCreateRequest):
             "project_id": project_id,
             **project_data
         })
+        
     except Exception as e:
         return create_json_response(
             {
@@ -1025,6 +1061,8 @@ async def create_project(req: ProjectCreateRequest):
             },
             status_code=500,
         )
+
+        
 @router.get("/get_all_sessions")
 async def get_all_sessions(project_id: str = Query(..., description="Project ID to filter sessions")):
     """Get all session IDs with their respective session details for a specific project"""

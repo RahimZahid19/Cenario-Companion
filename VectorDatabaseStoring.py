@@ -38,7 +38,7 @@ def get_embedding(text: str) -> list:
 
 # Upsert to Pinecone
 def upsert_to_pinecone(embedding: list, metadata: dict):
-    vector_id = f"{metadata['project_id']}_chunk_{metadata['chunk_index']}"
+    vector_id = f"{metadata['session_id']}_chunk_{metadata['chunk_index']}"
     pinecone_index.upsert(
         vectors=[
             {

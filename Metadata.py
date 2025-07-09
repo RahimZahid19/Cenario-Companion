@@ -191,7 +191,6 @@ class SessionCreateRequest(BaseModel):
 
 class FinalizeMetadataRequest(BaseModel):
     session_id: str
-    transcript_path: str
     chunk_index: int = 0
 
 # metadata_dict = finalize_metadata()
