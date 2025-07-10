@@ -1,6 +1,7 @@
 import os
 import csv
 import io
+import re
 from typing import Optional
 from dotenv import load_dotenv
 from pinecone import Pinecone, Vector
@@ -74,6 +75,7 @@ Only output the CSV table. Do not include any additional explanation or text. If
     return chain
 
 # Parse LLM CSV output and upsert to Pinecone
+
 def parse_csv_to_json(csv_text: str, project_id: str, session_id: Optional[str] = None):
     meeting_title = project_id
 
@@ -92,9 +94,13 @@ def parse_csv_to_json(csv_text: str, project_id: str, session_id: Optional[str] 
     data = []
 
     for idx, row in enumerate(reader, start=1):
+        req_id = f"REQ-{idx:03d}"
+        vector_id = f"{req_id}_{session_id}"
+        description = row.get("Description", "")
+
         new_row = {
-            "id": f"REQ-{idx:03d}",
-            "description": row.get("Description", ""),
+            "id": req_id,
+            "description": description,
             "category": row.get("Category", ""),
             "priority": row.get("Priority", ""),
             "session": session_id or meeting_title,
@@ -103,19 +109,25 @@ def parse_csv_to_json(csv_text: str, project_id: str, session_id: Optional[str] 
         }
 
         try:
-            embedding = embedding_model.embed_query(new_row["description"])
+            embedding = embedding_model.embed_query(description)
             vector = Vector(
-                id=new_row["id"],
+                id=vector_id,
                 values=embedding,
-                metadata=new_row
+                metadata={
+                    "description": description,
+                    "session_id": session_id,
+                    "project_id": project_id,
+                    "type": "requirement"
+                }
             )
             index.upsert(vectors=[vector], namespace=project_id)
         except Exception as e:
-            print(f"Error upserting {new_row['id']} to Pinecone: {e}")
+            print(f"Error upserting {req_id} to Pinecone: {e}")
 
         data.append(new_row)
 
     return data
+
 
 def fetch_requirement_descriptions(project_id, session_id):
     namespace = project_id
@@ -133,6 +145,84 @@ def fetch_requirement_descriptions(project_id, session_id):
 
     return [match['metadata']['description'] for match in response['matches'] if 'description' in match['metadata']]
 
+def generate_user_stories_from_requirement(requirement: str, epic_id: str, question_id: str):
+    story_prompt = ChatPromptTemplate.from_template(
+        """
+        You are an AI Product Analyst. Based on the following requirement:
+
+        "{requirement}"
+
+        Generate 1 to 3 user stories in the format:
+        "As a [user], I want to [do something], so that [benefit]".
+
+        Respond ONLY with a numbered list. No commentary.
+        """
+    )
+
+    chain = story_prompt | llm | StrOutputParser()
+    response = chain.invoke({"requirement": requirement})
+
+    # Remove leading numbers like "1. " or "2. " from each story
+    stories = [
+        re.sub(r"^\d+\.\s*", "", line.strip())
+        for line in response.splitlines()
+        if line.strip()
+    ]
+
+    return [
+        {
+            "id": f"{question_id}.{i+1}",
+            "story": story
+        }
+        for i, story in enumerate(stories)
+    ]
+
+# --------------------- Parse CSV and Group into Epics ---------------------
+
+def parse_csv_to_grouped_json(csv_str, descriptions, project_id, session_id):
+    csv_str = csv_str.strip()
+    reader = csv.DictReader(io.StringIO(csv_str))
+
+    expected_headers = {"Epic_Id", "Epic_Title"}
+    if not expected_headers.issubset(set(reader.fieldnames or [])):
+        raise ValueError(f"Invalid CSV headers. Expected: {expected_headers}, Got: {reader.fieldnames}")
+
+    grouped = {}
+    id_counter = 1
+    desc_index = 0
+
+    for row in reader:
+        title = row["Epic_Title"].strip()
+
+        if title not in grouped:
+            grouped[title] = {
+                "id": str(id_counter),
+                "title": title,
+                "project_id": project_id,
+                "session_id": session_id,
+                "user_stories": []
+            }
+            id_counter += 1
+
+        if desc_index >= len(descriptions):
+            break
+
+        desc = descriptions[desc_index].strip()
+        story_id = f"{grouped[title]['id']}.{len(grouped[title]['user_stories']) + 1}"
+
+        answers = generate_user_stories_from_requirement(desc, grouped[title]["id"], story_id)
+
+        grouped[title]["user_stories"].append({
+            "id": story_id,
+            "question": desc,
+            "answers": answers
+        })
+
+        desc_index += 1
+
+    return [epic for epic in grouped.values() if epic["user_stories"]]
+
+# --------------------- Generate and Group Epics ---------------------
 
 def generate_and_group_epics(descriptions, project_id, session_id):
     prompt = ChatPromptTemplate.from_template(
@@ -161,45 +251,3 @@ def generate_and_group_epics(descriptions, project_id, session_id):
     cleaned_csv = "\n".join(clean_lines)
 
     return parse_csv_to_grouped_json(cleaned_csv, descriptions, project_id, session_id)
-
-
-def parse_csv_to_grouped_json(csv_str, descriptions, project_id, session_id):
-    csv_str = csv_str.strip()
-    reader = csv.DictReader(io.StringIO(csv_str))
-    
-    expected_headers = {"Epic_Id", "Epic_Title"}
-    if not expected_headers.issubset(set(reader.fieldnames or [])):
-        raise ValueError(f"Invalid CSV headers. Expected: {expected_headers}, Got: {reader.fieldnames}")
-    
-    grouped = {}
-    id_counter = 1
-    desc_index = 0
-
-    for row in reader:
-        title = row["Epic_Title"].strip()
-
-        if title not in grouped:
-            grouped[title] = {
-                "id": str(id_counter),
-                "title": title,
-                "project_id": project_id,
-                "session_id": session_id,
-                "user_stories": []
-            }
-            id_counter += 1
-
-        if desc_index >= len(descriptions):
-            break
-
-        desc = descriptions[desc_index].strip()
-        story_id = f"{grouped[title]['id']}.{len(grouped[title]['user_stories']) + 1}"
-
-        grouped[title]["user_stories"].append({
-    "id": story_id,
-    "question": desc,
-    "answers": []  # Empty list instead of placeholder
-})
-
-        desc_index += 1
-
-    return [epic for epic in grouped.values() if epic["user_stories"]]

@@ -29,7 +29,6 @@ def get_requirements(
     except Exception as e:
         return {"status": "error", "message": str(e), "data": []}
 
-
 from fastapi import HTTPException
 
 @router.delete("/delete-requirement")
@@ -95,6 +94,7 @@ def get_epics(
 
     except Exception as e:
         return {"status": "error", "message": str(e), "data": []}
+        
 # @router.get("/generate-user-stories")
 # def get_user_stories(
 #     project_id: str = Query(..., description="Project ID to use"),
