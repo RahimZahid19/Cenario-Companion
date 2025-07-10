@@ -1,8 +1,10 @@
 import os
 import csv
 import io
+import re
+from typing import Optional
 from dotenv import load_dotenv
-from pinecone import Pinecone
+from pinecone import Pinecone, Vector
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -20,7 +22,7 @@ INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(INDEX_NAME)
 
-# Initialize Cohere embedding model (1024-d)
+# Initialize Cohere embedding model
 embedding_model = CohereEmbeddings(
     cohere_api_key=COHERE_API_KEY,
     model="embed-english-v3.0"
@@ -29,15 +31,25 @@ embedding_model = CohereEmbeddings(
 # Initialize LLM (Groq + LLaMA3)
 llm = init_chat_model("llama3-8b-8192", model_provider="groq")
 
-# Build LangChain retrieval pipeline
-def build_retrieval_chain(namespace: str):
+# Build retrieval chain
+def build_retrieval_chain(project_id: str, session_id: Optional[str] = None):
+    filter_dict = {"project_id": project_id}
+    if session_id:
+        filter_dict["session_id"] = session_id
+
     vectorstore = PineconeVectorStore(
         index=index,
         embedding=embedding_model,
         text_key="text",
-        namespace=namespace
+        namespace=project_id
     )
-    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 5})
+    retriever = vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={
+            "k": 5,
+            "filter": filter_dict
+        }
+    )
 
     prompt_template = ChatPromptTemplate.from_template("""
 Use the context below to answer the question.
@@ -62,41 +74,180 @@ Only output the CSV table. Do not include any additional explanation or text. If
     )
     return chain
 
-# Parse CSV to JSON using meeting_title instead of session ID
-def parse_csv_to_json(csv_text: str, namespace=None):
-    meeting_title = namespace  # fallback
+# Parse LLM CSV output and upsert to Pinecone
+
+def parse_csv_to_json(csv_text: str, project_id: str, session_id: Optional[str] = None):
+    meeting_title = project_id
 
     try:
-        # Attempt to fetch metadata from a known chunk ID
-        chunk_id = f"{namespace}_chunk_0"
-        fetch = index.fetch(ids=[chunk_id], namespace=namespace) # Debug print
+        chunk_id = f"{project_id}_chunk_0"
+        fetch = index.fetch(ids=[chunk_id], namespace=project_id)
 
         if fetch and hasattr(fetch, "vectors") and chunk_id in fetch.vectors:
             vector_obj = fetch.vectors[chunk_id]
             metadata = getattr(vector_obj, 'metadata', {})
-            meeting_title = metadata.get('meeting_title', namespace) if isinstance(metadata, dict) else namespace
+            meeting_title = metadata.get('meeting_title', project_id) if isinstance(metadata, dict) else project_id
     except Exception as e:
         print(f"Warning: Could not fetch meeting_title from Pinecone: {e}")
 
-    # Parse CSV string to list of camelCase dictionaries
     reader = csv.DictReader(io.StringIO(csv_text))
     data = []
+
     for idx, row in enumerate(reader, start=1):
+        req_id = f"REQ-{idx:03d}"
+        vector_id = f"{req_id}_{session_id}"
+        description = row.get("Description", "")
+
         new_row = {
-            "id": f"REQ-{idx:03d}",
-            "description": row.get("Description", ""),
+            "id": req_id,
+            "description": description,
             "category": row.get("Category", ""),
             "priority": row.get("Priority", ""),
-            "session": meeting_title,  # Use meeting_title here
-            "sources": row.get("Sources", "")
+            "session": session_id or meeting_title,
+            "sources": row.get("Sources", ""),
+            "project_id": project_id
         }
+
+        try:
+            embedding = embedding_model.embed_query(description)
+            vector = Vector(
+                id=vector_id,
+                values=embedding,
+                metadata={
+                    "description": description,
+                    "session_id": session_id,
+                    "project_id": project_id,
+                    "type": "requirement"
+                }
+            )
+            index.upsert(vectors=[vector], namespace=project_id)
+        except Exception as e:
+            print(f"Error upserting {req_id} to Pinecone: {e}")
+
         data.append(new_row)
+
     return data
 
-# Parse user stories output into a list of structured dicts
-def parse_user_stories(text: str):
-    return [
-        {"userStory": line.strip()}
-        for line in text.splitlines()
-        if line.strip().startswith("•")
+
+def fetch_requirement_descriptions(project_id, session_id):
+    namespace = project_id
+    filter_query = {"type": {"$eq": "requirement"}}
+    if session_id:
+        filter_query["session_id"] = {"$eq": session_id}
+
+    response = index.query(
+        namespace=namespace,
+        top_k=50,
+        vector=[0.0] * 1024,  # Dummy vector to enable filtering
+        filter=filter_query,
+        include_metadata=True
+    )
+
+    return [match['metadata']['description'] for match in response['matches'] if 'description' in match['metadata']]
+
+def generate_user_stories_from_requirement(requirement: str, epic_id: str, question_id: str):
+    story_prompt = ChatPromptTemplate.from_template(
+        """
+        You are an AI Product Analyst. Based on the following requirement:
+
+        "{requirement}"
+
+        Generate 1 to 3 user stories in the format:
+        "As a [user], I want to [do something], so that [benefit]".
+
+        Respond ONLY with a numbered list. No commentary.
+        """
+    )
+
+    chain = story_prompt | llm | StrOutputParser()
+    response = chain.invoke({"requirement": requirement})
+
+    # Remove leading numbers like "1. " or "2. " from each story
+    stories = [
+        re.sub(r"^\d+\.\s*", "", line.strip())
+        for line in response.splitlines()
+        if line.strip()
     ]
+
+    return [
+        {
+            "id": f"{question_id}.{i+1}",
+            "story": story
+        }
+        for i, story in enumerate(stories)
+    ]
+
+# --------------------- Parse CSV and Group into Epics ---------------------
+
+def parse_csv_to_grouped_json(csv_str, descriptions, project_id, session_id):
+    csv_str = csv_str.strip()
+    reader = csv.DictReader(io.StringIO(csv_str))
+
+    expected_headers = {"Epic_Id", "Epic_Title"}
+    if not expected_headers.issubset(set(reader.fieldnames or [])):
+        raise ValueError(f"Invalid CSV headers. Expected: {expected_headers}, Got: {reader.fieldnames}")
+
+    grouped = {}
+    id_counter = 1
+    desc_index = 0
+
+    for row in reader:
+        title = row["Epic_Title"].strip()
+
+        if title not in grouped:
+            grouped[title] = {
+                "id": str(id_counter),
+                "title": title,
+                "project_id": project_id,
+                "session_id": session_id,
+                "user_stories": []
+            }
+            id_counter += 1
+
+        if desc_index >= len(descriptions):
+            break
+
+        desc = descriptions[desc_index].strip()
+        story_id = f"{grouped[title]['id']}.{len(grouped[title]['user_stories']) + 1}"
+
+        answers = generate_user_stories_from_requirement(desc, grouped[title]["id"], story_id)
+
+        grouped[title]["user_stories"].append({
+            "id": story_id,
+            "question": desc,
+            "answers": answers
+        })
+
+        desc_index += 1
+
+    return [epic for epic in grouped.values() if epic["user_stories"]]
+
+# --------------------- Generate and Group Epics ---------------------
+
+def generate_and_group_epics(descriptions, project_id, session_id):
+    prompt = ChatPromptTemplate.from_template(
+        """
+        You are an AI product analyst. Based on the following requirements:
+
+        {requirements}
+
+        Group similar requirements under epics. Each epic must include:
+        - Epic_Id (e.g. 1, 1.1, 2)
+        - Epic_Title
+
+        Respond ONLY with a CSV formatted as follows (exact headers required, no extra spaces or commentary):
+        Epic_Id,Epic_Title
+        1,Your First Epic Title
+        2,Your Second Epic Title
+        """
+    )
+
+    chain = prompt | llm | StrOutputParser()
+    combined_reqs = "\n".join(f"- {r}" for r in descriptions)
+    csv_output = chain.invoke({"requirements": combined_reqs})
+
+    csv_lines = csv_output.strip().splitlines()
+    clean_lines = [line for line in csv_lines if "Epic_Id" in line or "," in line]
+    cleaned_csv = "\n".join(clean_lines)
+
+    return parse_csv_to_grouped_json(cleaned_csv, descriptions, project_id, session_id)
