@@ -14,6 +14,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 import re
 import time
 from datetime import datetime
+import uuid, os, asyncio, requests
+import json
 
 
 
@@ -86,7 +88,7 @@ async def join_meeting(request: JoinMeetingRequest = Body(...)):
             
             # Start bot in background
             async def start_bot_async():
-                global bot_state
+                global bot_state, current_meeting_id
                 try:
                     await run_in_threadpool(start_meeting_bot, meeting_url)
                     bot_state = "running"
@@ -94,6 +96,14 @@ async def join_meeting(request: JoinMeetingRequest = Body(...)):
                     print(f"Error starting bot: {e}")
                     bot_state = "idle"
                     current_meeting_id = None
+                    
+                    # Store the error for potential retrieval
+                    global last_bot_error
+                    last_bot_error = {
+                        "timestamp": datetime.now().isoformat(),
+                        "meeting_id": meeting_id,
+                        "error": str(e)
+                    }
             
             # Start the bot task
             bot_join_task = asyncio.create_task(start_bot_async())
@@ -110,9 +120,30 @@ async def join_meeting(request: JoinMeetingRequest = Body(...)):
         except Exception as e:
             bot_state = "idle"
             current_meeting_id = None
+            
+            # Enhanced error message based on error type
+            error_str = str(e).lower()
+            
+            if "net::err_name_not_resolved" in error_str:
+                error_message = "Bot failed to connect to the internet. Please check your internet connection and DNS settings. The bot cannot resolve domain names (DNS error)."
+            elif "net::err_network_changed" in error_str or "net::err_internet_disconnected" in error_str:
+                error_message = "Bot lost internet connection during startup. Please check your network connection and try again."
+            elif "net::err_connection_refused" in error_str or "net::err_connection_timeout" in error_str:
+                error_message = "Bot cannot connect to Google servers. Please check your internet connection and firewall settings. The connection was refused or timed out."
+            elif "accounts.google.com" in error_str:
+                error_message = "Bot cannot connect to Google authentication servers. Please check your internet connection and verify that Google services are accessible."
+            elif "authentication expired" in error_str or "auth" in error_str:
+                error_message = "Bot authentication has expired. Please run the login process again to refresh authentication credentials."
+            elif "failed to load authentication" in error_str:
+                error_message = "Bot failed to load authentication due to network connectivity issues. Please check your internet connection and try again."
+            elif "meet.google.com" in error_str:
+                error_message = "Bot cannot connect to Google Meet servers. Please check your internet connection and verify that Google Meet is accessible."
+            else:
+                error_message = f"Bot failed to start due to a network or connectivity error: {str(e)}. Please check your internet connection and try again."
+            
             return create_json_response({
                 "status": "error",
-                "message": f"Error starting bot: {str(e)}",
+                "message": error_message,
                 "bot_running": False
             }, status_code=500)
 
@@ -1012,15 +1043,21 @@ async def answer_question_from_transcript(
 @router.post("/projects")
 async def create_project(
     project_title: str = Form(...),
-    project_status: str = Form(...),
     client_name: str = Form(...),
+    issue_date: str = Form(...),
     proposal_deadline: str = Form(...),
     engagement_type: str = Form(...),
     industry: str = Form(...),
     software_type: str = Form(...),
     client_introduction: str = Form(...)
 ):
-    """Create a new project using form data"""
+    """Create a new project using form data
+    
+    Dropdown fields (industry, software_type) should be sent as regular form fields
+    with their selected values as strings, e.g.:
+    - industry: "Healthcare" or "Finance" or "Technology"
+    - software_type: "Web Application" or "Mobile App" or "Desktop Software"
+    """
     try:
         # Basic validation
         if not project_title.strip() or not client_name.strip():
@@ -1034,8 +1071,8 @@ async def create_project(
         # Create project data from form fields
         project_data = {
             "project_title": project_title.strip(),
-            "project_status": project_status.strip(),
             "client_name": client_name.strip(),
+            "issue_date": issue_date.strip(),
             "proposal_deadline": proposal_deadline.strip(),
             "engagement_type": engagement_type.strip(),
             "industry": industry.strip(),
@@ -1062,7 +1099,7 @@ async def create_project(
             status_code=500,
         )
 
-        
+
 @router.get("/get_all_sessions")
 async def get_all_sessions(project_id: str = Query(..., description="Project ID to filter sessions")):
     """Get all session IDs with their respective session details for a specific project"""
@@ -1236,3 +1273,244 @@ async def delete_session(identifier: str = Path(..., description="Session ID or 
             },
             status_code=500,
         )
+
+
+@router.post("/filling_from_file")
+async def filling_from_file(
+    file: UploadFile = File(..., description="Document file to extract project information from")
+):
+    """
+    Extract project information from uploaded document to pre-fill create project form.
+    
+    Accepts PDF files and extracts relevant project data including:
+    - projectTitle, clientName, issueDate, proposalDeadline
+    - engagementType, industry, softwareType, clientIntroduction
+    
+    Usage: Upload a document (SOW, proposal, etc.) and get structured data back
+    to pre-fill the create project form fields.
+    """
+    try:
+        # Validate file
+        if not file:
+            return create_json_response({
+                "status": "error",
+                "message": "File is required",
+                "data": None
+            }, status_code=400)
+        
+        # Check file type
+        if not file.filename.lower().endswith(".pdf"):
+            return create_json_response({
+                "status": "error",
+                "message": "Only PDF files are currently supported",
+                "data": None
+            }, status_code=400)
+        
+        # Create temporary file path
+        temp_filename = f"temp_{uuid.uuid4()}_{file.filename}"
+        temp_path = os.path.join(BASE_DIR, temp_filename)
+        
+        try:
+            # Save uploaded file temporarily
+            contents = await file.read()
+            with open(temp_path, "wb") as f:
+                f.write(contents)
+            
+            # Extract text from PDF
+            text = extract_text_from_pdf(temp_path)
+            
+            # Clean up temporary file
+            os.remove(temp_path)
+            
+            if not text.strip():
+                return create_json_response({
+                    "status": "error",
+                    "message": "No readable text found in the document",
+                    "data": None
+                }, status_code=400)
+            
+            # Use LLM to extract project information
+            extracted_data = await run_in_threadpool(
+                lambda: extract_project_data_from_text(text)
+            )
+            
+            return create_json_response({
+                "status": "success",
+                "message": "Project information extracted successfully",
+                "data": extracted_data
+            })
+            
+        except Exception as processing_error:
+            # Clean up temporary file if it exists
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            
+            return create_json_response({
+                "status": "error",
+                "message": f"Error processing file: {str(processing_error)}",
+                "data": None
+            }, status_code=500)
+            
+    except Exception as e:
+        return create_json_response({
+            "status": "error",
+            "message": f"Error uploading file: {str(e)}",
+            "data": None
+        }, status_code=500)
+
+
+def extract_project_data_from_text(text: str) -> dict:
+    """
+    Extract project-related information from document text using LLM.
+    
+    Args:
+        text: The document text to analyze
+        
+    Returns:
+        Dictionary containing extracted project information in camelCase
+    """
+    # Get Groq API key
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    if not GROQ_API_KEY:
+        raise Exception("GROQ_API_KEY not found in environment variables")
+    
+    # Debug: Print first 500 characters of extracted text
+    print(f"🔍 DEBUG: Extracted text preview (first 500 chars):")
+    print(f"'{text[:500]}...'")
+    print(f"📏 Total text length: {len(text)} characters")
+    
+    # Updated prompt with camelCase field names
+    prompt = f"""
+    Extract project information from the following document text.
+    
+    Document Text:
+    {text[:4000]}
+    
+    Extract the following information and return ONLY a valid JSON object with no additional text or explanation:
+    
+    {{
+        "projectTitle": "The title or name of the project",
+        "clientName": "The client or company name",
+        "issueDate": "Document issue date or project start date (format: YYYY-MM-DD if available)",
+        "proposalDeadline": "Proposal submission deadline (format: YYYY-MM-DD if available)",
+        "engagementType": "Type of engagement (e.g., 'Fixed Price', 'Time & Materials', 'Retainer', etc.)",
+        "industry": "Industry sector (e.g., 'Healthcare', 'Finance', 'Technology', 'Manufacturing', etc.)",
+        "softwareType": "Type of software being developed (e.g., 'Web Application', 'Mobile App', 'Desktop Software', etc.)",
+        "clientIntroduction": "Brief description of the client or project context"
+    }}
+    
+    IMPORTANT: 
+    - Return ONLY the JSON object above with the extracted values
+    - If any information is not found or not provided, use an empty string ("")
+    - No additional text, explanation, or notes
+    - Use camelCase for field names exactly as shown
+    """
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "model": "llama3-8b-8192",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a data extraction assistant. You return only valid JSON objects with no additional text or explanation. Never include introductory text or notes. If information is not provided, use empty strings. Use camelCase for field names."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 1000
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        
+        result = response.json()
+        content = result['choices'][0]['message']['content'].strip()
+        
+        # Debug: Print the raw LLM response
+        print(f"🤖 DEBUG: Raw LLM response:")
+        print(f"'{content}'")
+        
+        # Extract JSON from the response (handle cases where LLM adds extra text)
+        json_content = extract_json_from_text(content)
+        
+        try:
+            extracted_data = json.loads(json_content)
+            print(f"✅ DEBUG: Successfully parsed JSON")
+            
+            # Validate that we have the expected structure (updated field names in camelCase)
+            expected_fields = [
+                "projectTitle", "clientName", "issueDate", "proposalDeadline",
+                "engagementType", "industry", "softwareType", "clientIntroduction"
+            ]
+            
+            # Create ordered dictionary with correct field order
+            ordered_data = {}
+            for field in expected_fields:
+                if field in extracted_data:
+                    # Keep extracted value, but ensure empty strings for missing data
+                    ordered_data[field] = extracted_data[field] if extracted_data[field] else ""
+                else:
+                    # Field not found, use empty string
+                    ordered_data[field] = ""
+            
+            # Debug: Show what was extracted
+            print(f"📋 DEBUG: Extracted data:")
+            for key, value in ordered_data.items():
+                print(f"  {key}: '{value}'")
+            
+            return ordered_data
+            
+        except json.JSONDecodeError as e:
+            print(f"❌ DEBUG: JSON parsing failed: {e}")
+            print(f"Content that failed to parse: '{json_content}'")
+            # If JSON parsing fails, return empty structure with correct field order in camelCase
+            return {
+                "projectTitle": "",
+                "clientName": "",
+                "issueDate": "",
+                "proposalDeadline": "",
+                "engagementType": "",
+                "industry": "",
+                "softwareType": "",
+                "clientIntroduction": ""
+            }
+            
+    except requests.RequestException as e:
+        print(f"❌ DEBUG: API request failed: {e}")
+        raise Exception(f"Error calling Groq API: {str(e)}")
+    except Exception as e:
+        print(f"❌ DEBUG: Unexpected error: {e}")
+        raise Exception(f"Error extracting project data: {str(e)}")
+
+
+def extract_json_from_text(text: str) -> str:
+    """
+    Extract JSON object from text that may contain additional content.
+    
+    Args:
+        text: Text that contains a JSON object
+        
+    Returns:
+        Just the JSON object as a string
+    """
+    # Find the first '{' and last '}' to extract the JSON object
+    start_index = text.find('{')
+    end_index = text.rfind('}')
+    
+    if start_index != -1 and end_index != -1 and start_index < end_index:
+        json_content = text[start_index:end_index + 1]
+        print(f"🔧 DEBUG: Extracted JSON: '{json_content}'")
+        return json_content
+    
+    # If no JSON found, return the original text
+    print(f"⚠️ DEBUG: No JSON brackets found, returning original text")
+    return text        
