@@ -6,7 +6,8 @@ requests>=2.31.0
 # --- LangChain ecosystem ---
 langchain>=0.1.14
 langchain-core>=0.1.44
-langchain-community>=0.0.32
+# langchain-community>=0.0.32
+langchain-cohere>=0.0.19
 langchain-huggingface>=0.0.5
 langchain-chroma>=0.0.5
 langchain-text-splitters>=0.0.1
