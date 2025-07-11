@@ -23,10 +23,7 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(INDEX_NAME)
 
 # Initialize Cohere embedding model
-embedding_model = CohereEmbeddings(
-    cohere_api_key=COHERE_API_KEY,
-    model="embed-english-v3.0"
-)
+embedding_model = CohereEmbeddings(model="embed-english-v3.0")
 
 # Initialize LLM (Groq + LLaMA3)
 llm = init_chat_model("llama3-8b-8192", model_provider="groq")

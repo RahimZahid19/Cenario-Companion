@@ -2,22 +2,30 @@ playwright>=1.40.0
 PyPDF2>=3.0.0
 python-dotenv>=1.0.0
 requests>=2.31.0
-langchain>=0.1.0
+
+# --- LangChain ecosystem ---
+langchain>=0.1.14
+langchain-core>=0.1.44
+langchain-community>=0.0.32
 langchain-huggingface>=0.0.5
 langchain-chroma>=0.0.5
-langchain-core>=0.1.0
 langchain-text-splitters>=0.0.1
 langchain-groq>=0.0.1
-langchain-community>=0.0.1
 langchain-pinecone>=0.0.1
+
+# --- Vector DB / Embeddings ---
 pinecone-client>=3.0.0
 chromadb>=0.4.0
-groq>=0.4.0
 sentence-transformers>=2.2.2
+cohere>=4.40
+
+# --- LLM / API providers ---
+groq>=0.4.0
+
+# --- FastAPI backend ---
 fastapi==0.104.1
 uvicorn==0.24.0
 python-multipart
 python-docx
 nltk
-cohere
 psutil
