@@ -544,9 +544,11 @@ async def finalize_metadata(req: FinalizeMetadataRequest):
             {"error": f"Error finalizing metadata: {str(e)}"}, status_code=500
         )
 
+# ... existing code ...
+
 @router.post("/process-meeting-end")
 async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
-    """Process meeting end, leave meeting, and generate answers for session questions"""
+    """Process meeting end, leave meeting, generate answers for session questions, and finalize metadata"""
     global bot_state, bot_join_task, current_meeting_id
     
     async with bot_startup_lock:
@@ -614,6 +616,8 @@ async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
                 result = await run_in_threadpool(get_latest_transcript)
             
             generated_count = 0
+            metadata_finalized = False
+            chunks_processed = 0
             
             if result:
                 try:
@@ -770,6 +774,45 @@ async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
                             
                             # Update questions in database
                             questions_db[session_id] = questions
+                        
+                        # FINALIZE METADATA AND STORE IN VECTOR DATABASE
+                        print(f"🔄 Finalizing metadata for session: {session_id}")
+                        try:
+                            project_id = session.get("project_id")
+                            project = projects_db.get(project_id, {})
+                            manual_fields = {**project, **session}
+
+                            # Create metadata object and generate metadata
+                            metadata = Metadata(manual_fields)
+                            metadata.generate_after_meeting(transcript_path)
+
+                            # Read and chunk the transcript
+                            transcript_text = read_transcript(transcript_path)
+                            chunks = chunk_text(transcript_text)
+
+                            # Process each chunk and store in vector database
+                            for idx, chunk in enumerate(chunks):
+                                try:
+                                    final_metadata = metadata.get_metadata(chunk_index=idx)
+                                    final_metadata["text"] = chunk  # Store the chunk text
+                                    embedding = get_embedding(chunk)
+                                    upsert_to_pinecone(embedding, final_metadata)
+                                    chunks_processed += 1
+                                except Exception as e:
+                                    print(f"❌ Embedding or upsert failed for chunk {idx}: {e}")
+
+                            # Store last chunk's metadata globally
+                            global latest_metadata
+                            latest_metadata = final_metadata
+
+                            set_full_metadata(final_metadata)
+                            metadata_finalized = True
+
+                            print(f"✅ Metadata finalized and {chunks_processed} chunks stored in vector database")
+
+                        except Exception as e:
+                            print(f"❌ Error finalizing metadata: {e}")
+                            metadata_finalized = False
                             
                 except Exception as e:
                     print(f"❌ Error processing transcript: {e}")
@@ -783,6 +826,8 @@ async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
                 "bot_left": leave_success,
                 "transcript_file": result,
                 "answers_generated": generated_count,
+                "metadata_finalized": metadata_finalized,
+                "chunks_processed": chunks_processed,
                 "bot_running": False,
                 "bot_state": "idle"
             })
@@ -797,6 +842,8 @@ async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
                 "bot_running": False,
                 "bot_state": "idle"
             }, status_code=500)
+
+# ... existing code ...
 
 @router.get("/questions/generated/{session_id}")
 async def get_generated_questions(
