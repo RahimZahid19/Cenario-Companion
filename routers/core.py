@@ -1149,7 +1149,7 @@ async def create_project(
 
 @router.get("/get_all_sessions")
 async def get_all_sessions(project_id: str = Query(..., description="Project ID to filter sessions")):
-    """Get all session IDs with their respective session details for a specific project"""
+    """Get all session IDs with their respective session details for a specific project from Pinecone"""
     try:
         # Validate project_id
         if not project_id or not project_id.strip():
@@ -1162,42 +1162,163 @@ async def get_all_sessions(project_id: str = Query(..., description="Project ID 
                 },
                 status_code=400
             )
+        
         project_id = project_id.strip()
-        # Filter sessions by project_id
-        filtered_sessions = {
-            session_id: session_data
-            for session_id, session_data in sessions_db.items()
-            if session_data.get("project_id") == project_id
-        }
-        if not filtered_sessions:
+        
+        try:
+            # Initialize Pinecone connection
+            from pinecone import Pinecone
+            import os
+            
+            pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+            index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
+            
+            # Check if namespace exists
+            stats = index.describe_index_stats()
+            namespaces = stats.get('namespaces', {})
+            
+            if project_id not in namespaces:
+                return create_json_response({
+                    "status": True,
+                    "message": "No sessions found for this project",
+                    "totalSessions": 0,
+                    "data": []
+                })
+            
+            # Query vectors from the namespace to get session metadata
+            # Use a dummy vector to query all vectors in the namespace
+            dummy_vector = [0.0] * 1024  # Cohere embed-english-v3.0 dimension
+            
+            query_response = index.query(
+                vector=dummy_vector,
+                top_k=10000,  # High number to get all vectors
+                include_metadata=True,
+                namespace=project_id,
+                filter={"type": {"$ne": "requirement"}}  # Exclude requirement vectors
+            )
+            
+            if not query_response.matches:
+                # Try without filter to see what we get
+                query_response = index.query(
+                    vector=dummy_vector,
+                    top_k=10000,
+                    include_metadata=True,
+                    namespace=project_id
+                )
+            
+            if not query_response.matches:
+                return create_json_response({
+                    "status": True,
+                    "message": "No sessions found for this project",
+                    "totalSessions": 0,
+                    "data": []
+                })
+            
+            # Extract unique session data from vector metadata
+            sessions_data = {}
+            
+            for match in query_response.matches:
+                metadata = match.metadata
+                session_id = metadata.get('session_id')
+                
+                # Skip requirement vectors as they don't have session metadata
+                if metadata.get('type') == 'requirement':
+                    continue
+                
+                if session_id and session_id not in sessions_data:
+                    # Map the actual stored field names to the expected response format
+                    session_info = {
+                        "projectId": metadata.get('project_id', project_id),
+                        "meetingTitle": metadata.get('meeting_title', 'Untitled Meeting'),
+                        "stakeholders": metadata.get('stakeholders', []),
+                        "sessionObjective": metadata.get('session_objective', ''),
+                        "requirementType": metadata.get('requirement_type', ''),
+                        "followupQuestions": metadata.get('followup_questions', False),
+                        "fileUploaded": metadata.get('file_uploaded', False),
+                        "sessionId": session_id,
+                        "timestamp": metadata.get('created_at', datetime.now().strftime("%Y-%m-%d"))
+                    }
+                    sessions_data[session_id] = session_info
+            
+            # If no session data found from transcript chunks, create basic session info from requirement vectors
+            if not sessions_data:
+                for match in query_response.matches:
+                    metadata = match.metadata
+                    session_id = metadata.get('session_id')
+                    
+                    if session_id and session_id not in sessions_data:
+                        # Create basic session info from available data
+                        session_info = {
+                            "projectId": metadata.get('project_id', project_id),
+                            "meetingTitle": "Untitled Meeting",
+                            "stakeholders": [],
+                            "sessionObjective": "",
+                            "requirementType": "",
+                            "followupQuestions": False,
+                            "fileUploaded": False,
+                            "sessionId": session_id,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d")
+                        }
+                        sessions_data[session_id] = session_info
+            
+            # Convert to list for response
+            sessions_list = list(sessions_data.values())
+            
+            # Sort by timestamp (most recent first)
+            sessions_list.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+            
             return create_json_response({
                 "status": True,
-                "message": "No sessions found for this project",
-                "totalSessions": 0,
-                "data": []
+                "message": "Sessions retrieved successfully",
+                "totalSessions": len(sessions_list),
+                "data": sessions_list
             })
-        # Format session data for response
-        sessions_list = []
-        for session_id, session_data in filtered_sessions.items():
-            session_info = {
-                "projectId": session_data.get("project_id"),
-                "meetingTitle": session_data.get("meeting_title"),
-                "stakeholders": session_data.get("stakeholders"),
-                "sessionObjective": session_data.get("session_objective"),
-                "requirementType": session_data.get("requirement_type"),
-                "followupQuestions": session_data.get("followup_questions"),
-                "fileUploaded": session_data.get("file_uploaded"),
-                "sessionId": session_id,
-                "timestamp": session_data.get("created_at", datetime.now().strftime("%Y-%m-%d"))  # Use session timestamp or current date
+            
+        except Exception as pinecone_error:
+            print(f"Pinecone query error: {pinecone_error}")
+            
+            # Fallback to local sessions_db if Pinecone fails
+            print("Falling back to local sessions database...")
+            
+            filtered_sessions = {
+                session_id: session_data
+                for session_id, session_data in sessions_db.items()
+                if session_data.get("project_id") == project_id
             }
-            sessions_list.append(session_info)
-        return create_json_response({
-            "status": True,
-            "message": "Sessions retrieved successfully",
-            "totalSessions": len(sessions_list),
-            "data": sessions_list
-        })
+            
+            if not filtered_sessions:
+                return create_json_response({
+                    "status": True,
+                    "message": "No sessions found for this project",
+                    "totalSessions": 0,
+                    "data": []
+                })
+            
+            # Format session data for response (fallback) - keeping exact structure
+            sessions_list = []
+            for session_id, session_data in filtered_sessions.items():
+                session_info = {
+                    "projectId": session_data.get("project_id"),
+                    "meetingTitle": session_data.get("meeting_title"),
+                    "stakeholders": session_data.get("stakeholders"),
+                    "sessionObjective": session_data.get("session_objective"),
+                    "requirementType": session_data.get("requirement_type"),
+                    "followupQuestions": session_data.get("followup_questions"),
+                    "fileUploaded": session_data.get("file_uploaded"),
+                    "sessionId": session_id,
+                    "timestamp": session_data.get("created_at", datetime.now().strftime("%Y-%m-%d"))
+                }
+                sessions_list.append(session_info)
+            
+            return create_json_response({
+                "status": True,
+                "message": "Sessions retrieved successfully",
+                "totalSessions": len(sessions_list),
+                "data": sessions_list
+            })
+            
     except Exception as e:
+        print(f"Error in get_all_sessions: {e}")
         return create_json_response({
             "status": False,
             "message": f"Error retrieving sessions: {str(e)}",
