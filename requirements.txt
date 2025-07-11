@@ -19,6 +19,5 @@ uvicorn==0.24.0
 python-multipart
 python-docx
 nltk
-cohere==4.40
+cohere
 psutil
-langchain-cohere>=0.0.1
