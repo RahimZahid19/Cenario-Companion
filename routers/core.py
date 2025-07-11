@@ -1087,27 +1087,38 @@ async def answer_question_from_transcript(
         )
 
 
+# Add this new Pydantic model at the top with other models
+class CreateProjectRequest(BaseModel):
+    project_title: str
+    client_name: str
+    issue_date: str
+    proposal_deadline: str
+    engagement_type: str
+    industry: str
+    software_type: str
+    client_introduction: str
+
+# ... existing code ...
+
 @router.post("/projects")
-async def create_project(
-    project_title: str = Form(...),
-    client_name: str = Form(...),
-    issue_date: str = Form(...),
-    proposal_deadline: str = Form(...),
-    engagement_type: str = Form(...),
-    industry: str = Form(...),
-    software_type: str = Form(...),
-    client_introduction: str = Form(...)
-):
-    """Create a new project using form data
+async def create_project(request: CreateProjectRequest = Body(...)):
+    """Create a new project using JSON data in request body
     
-    Dropdown fields (industry, software_type) should be sent as regular form fields
-    with their selected values as strings, e.g.:
-    - industry: "Healthcare" or "Finance" or "Technology"
-    - software_type: "Web Application" or "Mobile App" or "Desktop Software"
+    Example request body:
+    {
+        "project_title": "CRM Integration Phase 1",
+        "client_name": "XYZ Manufacturing",
+        "issue_date": "2024-06-15",
+        "proposal_deadline": "2024-07-01",
+        "engagement_type": "Fixed Bid",
+        "industry": "Manufacturing",
+        "software_type": "CRM",
+        "client_introduction": "XYZ Manufacturing is a leading provider of industrial solutions."
+    }
     """
     try:
         # Basic validation
-        if not project_title.strip() or not client_name.strip():
+        if not request.project_title.strip() or not request.client_name.strip():
             return create_json_response({
                 "status": "error",
                 "message": "Project title and client name are required"
@@ -1115,16 +1126,16 @@ async def create_project(
             
         project_id = str(uuid.uuid4())
         
-        # Create project data from form fields
+        # Create project data from request body
         project_data = {
-            "project_title": project_title.strip(),
-            "client_name": client_name.strip(),
-            "issue_date": issue_date.strip(),
-            "proposal_deadline": proposal_deadline.strip(),
-            "engagement_type": engagement_type.strip(),
-            "industry": industry.strip(),
-            "software_type": software_type.strip(),
-            "client_introduction": client_introduction.strip(),
+            "project_title": request.project_title.strip(),
+            "client_name": request.client_name.strip(),
+            "issue_date": request.issue_date.strip(),
+            "proposal_deadline": request.proposal_deadline.strip(),
+            "engagement_type": request.engagement_type.strip(),
+            "industry": request.industry.strip(),
+            "software_type": request.software_type.strip(),
+            "client_introduction": request.client_introduction.strip(),
             "created_at": datetime.now().strftime("%Y-%m-%d")  # Add timestamp
         }
         
