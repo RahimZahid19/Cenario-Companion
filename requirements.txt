@@ -21,3 +21,4 @@ python-docx
 nltk
 cohere
 psutil
+langchain-cohere>=0.0.1
