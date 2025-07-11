@@ -19,11 +19,5 @@ uvicorn==0.24.0
 python-multipart
 python-docx
 nltk
-langchain-cohere
 cohere
 psutil
-asyncio
-platform
-subprocess
-signal
-
