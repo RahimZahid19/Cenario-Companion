@@ -272,4 +272,3 @@ def process_metadata_for_vector_db(metadata_dict: dict):
     
     return vector_data
 
-# @app.post("/projects")

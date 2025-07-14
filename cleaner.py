@@ -6,397 +6,251 @@ import shutil
 from load_env import setup_env
 setup_env()
 
-from langchain.chat_models import init_chat_model
-llm = init_chat_model("llama3-8b-8192", model_provider="groq")
+from langchain_groq import ChatGroq
 
-# Global flag to prevent multiple simultaneous processing
-is_processing = False
+llm = ChatGroq(model="llama3-8b-8192", temperature=0)
 
 def generate_sow_from_transcript(transcript_text: str) -> str:
-    prompt = (
-        "You are a professional business analyst.\n\n"
-        "Based on the following meeting transcript, generate a formal Statement of Work (SOW) document with these sections:\n"
-        "1. Project Overview\n"
-        "2. Objectives\n"
-        "3. Scope of Work\n"
-        "4. Deliverables\n"
-        "5. Timeline (estimate if not mentioned)\n"
-        "6. Assumptions\n"
-        "7. Risks and Mitigation\n"
-        "8. Acceptance Criteria\n"
-        "9. Stakeholders\n\n"
-        "Meeting Transcript:\n"
-        f"\"\"\"\n{transcript_text.strip()}\n\"\"\"\n\n"
-        "Only return the completed SOW. Do not include extra commentary."
-    )
-
-    result = llm.invoke(prompt)
-    content = result.content.strip() if hasattr(result, "content") else str(result).strip()
-
-    # Strip any common unnecessary preambles LLMs sometimes include
-    clean_intro_patterns = [
-        "here is the statement of work",
-        "statement of work",
-        "sow document",
-        "as requested",
-    ]
-
-    for phrase in clean_intro_patterns:
-        if content.lower().startswith(phrase):
-            content = content.split("\n", 1)[-1].strip()
-            break
-
-    return content
-
+    prompt = f"""
+    Based on the following meeting transcript, generate a comprehensive Statement of Work (SOW) document.
+    
+    Transcript:
+    {transcript_text}
+    
+    Please create a detailed SOW that includes:
+    1. Project Overview and Objectives
+    2. Scope of Work and Deliverables
+    3. Timeline and Milestones
+    4. Technical Requirements
+    5. Budget and Resource Allocation
+    6. Risk Assessment and Mitigation
+    7. Success Criteria and KPIs
+    8. Terms and Conditions
+    
+    Format the response as a professional SOW document with clear sections and bullet points.
+    """
+    
+    try:
+        response = llm.invoke(prompt)
+        return response.content
+    except Exception as e:
+        print(f"Error generating SOW: {e}")
+        return f"Error generating SOW: {e}"
 
 def clean_with_llm(text: str) -> str:
-    prompt = (
-        "You will be given a raw meeting transcript formatted as [mm:ss] Speaker: sentence.\n"
-        "Your task is to produce a cleaned version that:\n"
-        "1. Deletes repeated or nearly identical sentences or thoughts.\n"
-        "2. Merges fragmented messages from the same speaker into a single, clear sentence where possible.\n"
-        "3. Removes duplicated words and phrases.\n"
-        "4. Completes any incomplete or broken sentences.\n"
-        "5. Fixes grammar and fluency.\n"
-        "6. Keeps the timestamp and speaker format exactly as it is.\n\n"
-        "Output ONLY the cleaned transcript — do not include any explanation.\n\n"
-        f"{text.strip()}"
-    )
-
-    result = llm.invoke(prompt)
-    content = result.content.strip() if hasattr(result, "content") else str(result).strip()
-
-    # Strip any known intro phrases LLM might include
-    clean_intro_patterns = [
-        "here is the cleaned transcript",
-        "cleaned version",
-        "here you go",
-        "as requested",
-    ]
-
-    for phrase in clean_intro_patterns:
-        if content.lower().startswith(phrase):
-            content = content.split("\n", 1)[-1].strip()
-            break
-
-    return content
-
+    # Clean the text using LLM
+    prompt = f"""
+    Clean up the following transcript text. Remove any unnecessary repetitions, fix grammatical errors, 
+    and improve readability while maintaining the original meaning and context. 
+    Format it as a proper meeting transcript with clear speaker attributions.
+    
+    Text to clean:
+    {text}
+    
+    Return only the cleaned transcript without any additional comments or explanations.
+    """
+    
+    try:
+        response = llm.invoke(prompt)
+        return response.content
+    except Exception as e:
+        print(f"Error cleaning transcript: {e}")
+        return text  # Return original if cleaning fails
 
 def format_transcript(filename):
-    with open(filename, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    formatted = []
-    last_speaker = None
-    last_time = None
-    buffer = []
-
+    # Read the transcript file
+    with open(filename, 'r', encoding='utf-8') as file:
+        content = file.read()
+    
+    # Split into lines and process
+    lines = content.strip().split('\n')
+    formatted_lines = []
+    
     for line in lines:
-        match = re.match(r"\[(\d{2}:\d{2}:\d{2})\] \[(.*?)\] (.+)", line.strip())
-        if not match:
-            continue
-
-        timestamp_str, speaker, text = match.groups()
-        timestamp_obj = datetime.strptime(timestamp_str, "%H:%M:%S")
-        mmss = f"[{timestamp_obj.minute:02d}:{timestamp_obj.second:02d}]"
-
-        if speaker != last_speaker:
-            if last_speaker and buffer:
-                formatted.append(f"{last_time} {last_speaker}: {' '.join(buffer)}")
-                buffer = []
-
-            last_speaker = speaker
-            last_time = mmss
-
-        buffer.append(text)
-
-    if last_speaker and buffer:
-        formatted.append(f"{last_time} {last_speaker}: {' '.join(buffer)}")
-
-    raw_text = "\n\n".join(formatted)
-
-    # Optional: create backup before overwriting
-    backup_path = filename.replace(".txt", "_backup.txt")
-    shutil.copy(filename, backup_path)
-
-    cleaned_text = clean_with_llm(raw_text)
-
-    # Overwrite original file
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(cleaned_text)
-
-    print(f"Cleaned and overwritten: {filename}")
-    print(f"Backup saved as: {backup_path}")
-
+        line = line.strip()
+        if line:
+            # Try to extract timestamp and speaker
+            # Pattern: [timestamp] Speaker: text
+            match = re.match(r'\[(.*?)\]\s*(.*?):\s*(.*)', line)
+            if match:
+                timestamp, speaker, text = match.groups()
+                formatted_lines.append(f"[{timestamp}] {speaker}: {text}")
+            else:
+                # If no pattern match, just add the line
+                formatted_lines.append(line)
+    
+    # Join back and write to file
+    formatted_content = '\n'.join(formatted_lines)
+    
+    # Save formatted version
+    with open(filename, 'w', encoding='utf-8') as file:
+        file.write(formatted_content)
+    
+    print(f"✅ Formatted transcript saved to {filename}")
+    return formatted_content
 
 def get_latest_transcript():
-    # Only get main transcript files (not summary files)
-    files = [f for f in os.listdir('.') if re.match(r"transcript_\d+\.txt$", f)]
-    files.sort(key=os.path.getmtime, reverse=True)
-    return files[0] if files else None
+    # Get the latest transcript file
+    transcript_files = [f for f in os.listdir('.') if f.startswith('transcript_') and f.endswith('.txt')]
+    if not transcript_files:
+        return None
+    
+    latest_file = max(transcript_files, key=lambda x: int(re.findall(r'\d+', x)[0]))
+    return latest_file
 
 def load_transcript(filename):
-    with open(filename, "r", encoding="utf-8") as f:
-        return f.read().strip()
+    with open(filename, 'r', encoding='utf-8') as file:
+        return file.read()
 
 def save_sow_to_file(sow_text, filename):
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(sow_text)
+    with open(filename, 'w', encoding='utf-8') as file:
+        file.write(sow_text)
 
 def sow(latest):
-    transcript_text = load_transcript(latest)
-    print("\n Generating Statement of Work (SOW)...")
-
-    # Generate SOW
-    sow_text = generate_sow_from_transcript(transcript_text)
-
-    # Create output filename (using the transcript filename without extension)
-    file_base = os.path.splitext(latest)[0]  # Remove .txt extension
-    sow_file = f"{file_base}_SOW.txt"
+    if latest:
+        transcript_text = load_transcript(latest)
+        sow_text = generate_sow_from_transcript(transcript_text)
         
-    # Save SOW
-    save_sow_to_file(sow_text, sow_file)
-    print(f" SOW saved to '{sow_file}'")
-    
+        base_name = latest.replace('.txt', '')
+        sow_filename = f"{base_name}_SOW.txt"
+        save_sow_to_file(sow_text, sow_filename)
+        print(f"✅ SOW generated and saved to {sow_filename}")
+    else:
+        print("❌ No transcript file found")
 
 def generate_document_from_transcript(transcript_text: str, doc_type: str) -> str:
-    prompts = {
-        "SOW": (
-            "You are a professional business analyst.\n\n"
-            "Based on the following meeting transcript, generate a formal Statement of Work (SOW) document with these sections:\n"
-            "1. Project Overview\n"
-            "2. Objectives\n"
-            "3. Scope of Work\n"
-            "4. Deliverables\n"
-            "5. Timeline (estimate if not mentioned)\n"
-            "6. Assumptions\n"
-            "7. Risks and Mitigation\n"
-            "8. Acceptance Criteria\n"
-            "9. Stakeholders\n\n"
-            "Meeting Transcript:\n"
-            f"\"\"\"\n{transcript_text.strip()}\n\"\"\"\n\n"
-            "Generate a comprehensive SOW of approximately 4000 words. Include specific details, examples, and clear explanations for each section. "
-            "Only return the completed SOW. Do not include extra commentary."
-        ),
-        "BRD": (
-            "You are a senior business analyst.\n\n"
-            "Based on the following meeting transcript, generate a detailed Business Requirements Document (BRD) with these sections:\n"
-            "1. Executive Summary\n"
-            "2. Project Background\n"
-            "3. Business Objectives\n"
-            "4. Stakeholder Analysis\n"
-            "5. Functional Requirements\n"
-            "6. Non-Functional Requirements\n"
-            "7. Business Rules\n"
-            "8. Process Flows\n"
-            "9. Data Requirements\n"
-            "10. User Acceptance Criteria\n"
-            "11. Constraints and Assumptions\n"
-            "12. Risks and Mitigation Strategies\n\n"
-            "Meeting Transcript:\n"
-            f"\"\"\"\n{transcript_text.strip()}\n\"\"\"\n\n"
-            "Generate a comprehensive BRD of approximately 4000 words. Include detailed requirements, process flows, and clear acceptance criteria. "
-            "Only return the completed BRD. Do not include extra commentary."
-        ),
-        "Project_Scope": (
-            "You are a project management expert.\n\n"
-            "Based on the following meeting transcript, generate a detailed Project Scope Document with these sections:\n"
-            "1. Project Overview\n"
-            "2. Business Case\n"
-            "3. Project Objectives\n"
-            "4. Scope Description\n"
-            "5. Deliverables\n"
-            "6. Milestones\n"
-            "7. Technical Requirements\n"
-            "8. Constraints\n"
-            "9. Assumptions\n"
-            "10. Dependencies\n"
-            "11. Risks and Mitigation\n"
-            "12. Success Criteria\n\n"
-            "Meeting Transcript:\n"
-            f"\"\"\"\n{transcript_text.strip()}\n\"\"\"\n\n"
-            "Generate a comprehensive Project Scope document of approximately 4000 words. Include specific details about project boundaries, deliverables, and success criteria. "
-            "Only return the completed document. Do not include extra commentary."
-        ),
-        "Meeting_Summary": (
-            "You are a professional meeting facilitator.\n\n"
-            "Based on the following meeting transcript, generate a clear and concise meeting summary.\n\n"
-            "Meeting Transcript:\n"
-            f"\"\"\"\n{transcript_text.strip()}\n\"\"\"\n\n"
-            "Provide a straightforward summary of what was discussed, key points, and any important outcomes. "
-            "Keep it concise and focused on the main content of the meeting. "
-            "Only return the meeting summary. Do not include extra commentary or structured sections."
-        ),
-        "Technical_Design": (
-            "You are a senior technical architect.\n\n"
-            "Based on the following meeting transcript, generate a comprehensive Technical Design Document with these sections:\n"
-            "1. System Overview\n"
-            "2. Architecture Design\n"
-            "3. Technical Requirements\n"
-            "4. System Components\n"
-            "5. Data Models\n"
-            "6. API Specifications\n"
-            "7. Security Requirements\n"
-            "8. Performance Requirements\n"
-            "9. Integration Points\n"
-            "10. Deployment Strategy\n"
-            "11. Testing Strategy\n"
-            "12. Maintenance Plan\n\n"
-            "Meeting Transcript:\n"
-            f"\"\"\"\n{transcript_text.strip()}\n\"\"\"\n\n"
-            "Generate a detailed Technical Design Document of approximately 4000 words. Include specific technical details, diagrams, and implementation guidelines. "
-            "Only return the completed document. Do not include extra commentary."
-        )
-    }
-
-    if doc_type not in prompts:
-        raise ValueError(f"Unsupported document type: {doc_type}")
-
-    result = llm.invoke(prompts[doc_type])
-    content = result.content.strip() if hasattr(result, "content") else str(result).strip()
-
-    # Strip any common unnecessary preambles LLMs sometimes include
-    clean_intro_patterns = [
-        "here is the",
-        "as requested",
-        "based on the transcript",
-        "following is the",
-    ]
-
-    for phrase in clean_intro_patterns:
-        if content.lower().startswith(phrase):
-            content = content.split("\n", 1)[-1].strip()
-            break
-
-    return content
-
-def save_document_to_file(doc_text: str, filename: str):
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(doc_text)
-
-def generate_documents(latest: str):
-    transcript_text = load_transcript(latest)
-    print("\nGenerating meeting summary from transcript...")
-
-    # Create output filename base (using the transcript filename without extension)
-    file_base = os.path.splitext(latest)[0]  # Remove .txt extension
+    """Generate different types of documents from transcript"""
     
-    # Generate only Meeting Summary document
-    doc_type = "Meeting_Summary"
+    if doc_type == "summary":
+        prompt = f"""
+        Based on the following meeting transcript, generate a comprehensive meeting summary.
+        
+        Transcript:
+        {transcript_text}
+        
+        Please create a detailed summary that includes:
+        1. Meeting Overview
+        2. Key Discussion Points
+        3. Decisions Made
+        4. Action Items
+        5. Next Steps
+        
+        Format the response as a professional meeting summary.
+        """
+    else:
+        return f"Document type '{doc_type}' not supported"
     
-    print(f"\nGenerating {doc_type}...")
     try:
-        doc_text = generate_document_from_transcript(transcript_text, doc_type)
-        doc_file = f"{file_base}_{doc_type}.txt"
-        save_document_to_file(doc_text, doc_file)
-        print(f"{doc_type} saved to '{doc_file}'")
+        response = llm.invoke(prompt)
+        return response.content
     except Exception as e:
         print(f"Error generating {doc_type}: {e}")
+        return f"Error generating {doc_type}: {e}"
+
+def save_document_to_file(doc_text: str, filename: str):
+    """Save document text to file"""
+    with open(filename, 'w', encoding='utf-8') as file:
+        file.write(doc_text)
+
+def generate_documents(latest: str):
+    """Generate documents from the latest transcript - DISABLED"""
+    print("📄 Document generation is disabled")
+    return
+    
+    # This code is commented out to disable automatic document generation
+    # if latest:
+    #     transcript_text = load_transcript(latest)
+    #     base_name = latest.replace('.txt', '')
+    #     
+    #     # Generate Meeting Summary
+    #     summary_text = generate_document_from_transcript(transcript_text, "summary")
+    #     summary_filename = f"{base_name}_Meeting_Summary.txt"
+    #     save_document_to_file(summary_text, summary_filename)
+    #     print(f"✅ Meeting Summary generated and saved to {summary_filename}")
+    # else:
+    #     print("❌ No transcript file found for document generation")
 
 def get_next_transcript_number():
-    """Get the next transcript number based on existing files"""
-    files = [f for f in os.listdir('.') if f.startswith("transcript_") and f.endswith(".txt")]
-    if not files:
+    """Get the next available transcript number"""
+    transcript_files = [f for f in os.listdir('.') if f.startswith('transcript_') and f.endswith('.txt')]
+    
+    if not transcript_files:
         return 1
     
+    # Extract numbers from filenames
     numbers = []
-    for file in files:
-        match = re.match(r"transcript_(\d+)\.txt", file)
+    for filename in transcript_files:
+        match = re.search(r'transcript_(\d+)\.txt', filename)
         if match:
             numbers.append(int(match.group(1)))
     
-    return max(numbers) + 1 if numbers else 1
+    if not numbers:
+        return 1
+    
+    return max(numbers) + 1
 
 def convert_chat_to_transcript():
-    """
-    Convert chat.txt to transcript_X.txt and process it using existing functions
-    """
-    global is_processing
+    """Convert chat.txt to a numbered transcript file - RAW COPY ONLY"""
+    chat_file = "chat.txt"
     
-    # Prevent multiple simultaneous processing
-    if is_processing:
-        print("Already processing a transcript. Please wait...")
+    if not os.path.exists(chat_file):
+        print(f"❌ {chat_file} not found")
         return None
     
+    # Check if chat.txt is empty
+    if os.path.getsize(chat_file) == 0:
+        print(f"❌ {chat_file} is empty")
+        return None
+    
+    # Get next transcript number
+    next_number = get_next_transcript_number()
+    transcript_filename = f"transcript_{next_number}.txt"
+    
     try:
-        is_processing = True
-        
-        # Check if chat.txt exists
-        if not os.path.exists("chat.txt"):
-            print("No chat.txt file found.")
-            return None
-        
-        # Check if chat.txt is empty
-        with open("chat.txt", "r", encoding="utf-8") as f:
-            chat_content = f.read().strip()
+        # Read chat.txt
+        with open(chat_file, 'r', encoding='utf-8') as file:
+            chat_content = file.read().strip()
         
         if not chat_content:
-            print("chat.txt is empty. No content to process.")
+            print(f"❌ {chat_file} is empty")
             return None
         
-        # Get next transcript number
-        next_number = get_next_transcript_number()
-        new_transcript_name = f"transcript_{next_number}.txt"
+        # Save raw content directly to transcript file (NO LLM PROCESSING)
+        with open(transcript_filename, 'w', encoding='utf-8') as file:
+            file.write(chat_content)
         
-        print(f"Converting chat.txt to {new_transcript_name}")
+        print(f"✅ Raw transcript saved to {transcript_filename}")
         
-        # Copy chat.txt to new transcript file
-        shutil.copy("chat.txt", new_transcript_name)
+        # Clear chat.txt for next session
+        with open(chat_file, 'w', encoding='utf-8') as file:
+            file.write("")
         
-        # Clear chat.txt after copying to prevent duplicate processing
-        with open("chat.txt", "w", encoding="utf-8") as f:
-            f.write("")
+        print(f"✅ {chat_file} cleared for next session")
         
-        print(f"Cleared chat.txt to prevent duplicate processing")
-        
-        # Skip cleaning - just generate documents directly
-        print(f"Generating documents from {new_transcript_name}...")
-        generate_documents(new_transcript_name)
-        
-        print(f"Successfully created and processed {new_transcript_name}")
-        return new_transcript_name
+        return transcript_filename
         
     except Exception as e:
-        print(f"Error converting chat to transcript: {e}")
+        print(f"❌ Error converting chat to transcript: {e}")
         return None
-    finally:
-        is_processing = False
 
 def reset_processing_state():
-    """Reset the processing state and clear chat.txt"""
-    global is_processing
-    is_processing = False
+    """Reset the processing state by clearing chat.txt"""
+    chat_file = "chat.txt"
+    
     try:
-        with open("chat.txt", "w", encoding="utf-8") as f:
-            f.write("")
-        print("Reset processing state and cleared chat.txt")
+        with open(chat_file, 'w', encoding='utf-8') as file:
+            file.write("")
+        print(f"✅ {chat_file} cleared - ready for new session")
         return True
     except Exception as e:
-        print(f"Error resetting state: {e}")
+        print(f"❌ Error clearing {chat_file}: {e}")
         return False
 
+# For testing
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "process-chat":
-        # Process existing chat.txt file
-        print("Processing existing chat.txt file...")
-        result = convert_chat_to_transcript()
-        if result:
-            print(f"Successfully processed chat.txt to {result}")
-        else:
-            print("Failed to process chat.txt")
+    # Test the conversion
+    result = convert_chat_to_transcript()
+    if result:
+        print(f"Conversion successful: {result}")
     else:
-        # Process latest transcript (original behavior)
-        latest = get_latest_transcript()
-        if latest:
-            # Process the transcript
-            format_transcript(latest)
-            
-            # Generate only meeting summary
-            generate_documents(latest)
-        else:
-            print("No transcript file found.")
-            print("To process an existing chat.txt file, run: python cleaner.py process-chat")
-
-
+        print("Conversion failed")

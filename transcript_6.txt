@@ -1,0 +1,8 @@
+**Meeting Transcript**
+**Date:** [Not specified]
+**Attendees:** Sameer Uddin
+**Time:** [Not specified]
+**Sameer Uddin:** We combined the strengths of information retrieval and text generation by leveraging traditional language models that answer questions from pre-trained knowledge tracks.
+**Sameer Uddin:** Our approach first retrieves relevant documents from an external knowledge base, which is an advanced opportunity. We then use natural language processing to craft responses.
+**Sameer Uddin:** The knowledge base is a vector database or social services, and we utilize a generator model to create the final output.
+**End of Meeting**

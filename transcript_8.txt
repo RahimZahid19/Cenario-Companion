@@ -1,53 +1,19 @@
-[00:00] Sarah (Product Manager): Thanks for joining, both of you. So let’s kick off the planning for the football app. The goal is to create a platform where users can track live scores, view team stats, and manage fantasy leagues.
-
-[00:12] Ali (Tech Lead): Got it. Are we building from scratch, or do we plan to integrate with existing APIs for scores and player stats?
-
-[00:18] Sarah: Good question. We’ll be using a third-party API like API-Football or Sportradar for the data feeds. That should save us a lot of time.
-
-[00:26] Nina (UI/UX Designer): Okay, so the primary features are live scores, team and player stats, and a fantasy league component?
-
-[00:32] Sarah: Exactly. And I think the MVP should focus on scores and stats first. Fantasy can come later.
-
-[00:38] Ali: Actually, I’d suggest we plan the fantasy component architecture now, even if we implement it later. It can affect our backend structure.
-
-[00:45] Sarah: Hmm, fair point. Let’s add it to the planning phase, but not include it in the MVP delivery.
-
-[00:52] Nina: For the UI, do we have a target audience in mind? Casual fans or more serious followers?
-
-[00:58] Sarah: Mostly casual fans, especially those who follow European leagues. The experience should be fast, minimal, and mobile-first.
-
-[01:05] Ali: That makes sense. I’ll design a modular backend — probably Node.js with PostgreSQL. We can containerize with Docker and maybe deploy on Vercel or Railway?
-
-[01:14] Nina: Do we want to support dark mode? Most sports apps do that now.
-
-[01:18] Sarah: Yes, good catch. Let’s make that default, especially since users often check scores at night.
-
-[01:24] Ali: Agreed. I’ll make sure the frontend architecture supports theming. Probably React Native or Flutter?
-
-[01:30] Sarah: I was actually thinking of just doing mobile web at first. App stores take time to publish.
-
-[01:36] Ali: Hmm. But earlier you said mobile-first — wouldn’t native give us better performance?
-
-[01:41] Sarah: You're right. Let's do React Native then. It gives us a faster dev cycle and native feel.
-
-[01:46] Nina: Okay, so I’ll start designing for React Native then. Do we have branding or logos?
-
-[01:51] Sarah: Not yet, but I’ll get our marketing intern to work on initial concepts. Just use placeholder assets for now.
-
-[01:57] Ali: For user auth, do we want email sign-up, or social logins like Google and Facebook?
-
-[02:03] Sarah: Let’s do Google and Apple ID. No passwords for now — keep onboarding quick.
-
-[02:09] Nina: And push notifications for live scores?
-
-[02:12] Sarah: Yes — only for teams users follow. We'll need a notification preferences screen.
-
-[02:17] Ali: Okay, summarizing the tech stack: React Native frontend, Node.js backend, PostgreSQL, and 3rd-party football API. We'll use Firebase for auth and FCM for notifications.
-
-[02:28] Sarah: Perfect. I’ll draft the user stories by tomorrow, and let’s meet again Friday to finalize the timeline.
-
-[02:34] Nina: Works for me. I’ll show a wireframe draft by then.
-
-[02:37] Ali: Same here — I’ll set up the repo and start with API integration.
-
-[02:42] Sarah: Awesome. Let’s build the best football app out there.
+[00:00:00] Sameer Uddin: In the rack framework is an advanced approach in natural language processing,
+[00:00:00] Sameer Uddin: that combines this time of information retrieval and text generation and
+[00:00:03] Sameer Uddin: electrolation language models. They're generated answer purely from pretend
+[00:00:07] Sameer Uddin: knowledge.
+[00:00:12] Abdul Basit: Lamborghini is a luxurious Italian car manufacturer in renowned for its exotic
+[00:00:17] Abdul Basit: design, powerful, Indians and high performance. Supercars founded by a spiritual
+[00:00:21] Abdul Basit: Lamborghini in 1968 to complete to compete with Ferrari. The brand quickly, made
+[00:00:27] Abdul Basit: a name for itself, it Bones, Styling, and Engineering College, like the vented
+[00:00:32] Abdul Basit: on Eventidor Khan, and I calling me You are known for the Shoplines flooring. We
+[00:00:38] Abdul Basit: can meet up engines.
+[00:00:44] Sameer Uddin: Grandparency Development, Documents Foundation and Knowledge Base Address Index
+[00:00:48] Sameer Uddin: and then usually a generator model a club response based on those retreat.com
+[00:00:52] Sameer Uddin: this. Right, this makes regular special powerful for cars that require a potato
+[00:00:57] Sameer Uddin: specific cost.
+[00:01:01] Abdul Basit: Then we'll anyway to the noun. Just cause the statement of extreme performance
+[00:01:05] Abdul Basit: luxury and innovation, often associated with heaven status and cutting edge,
+[00:01:10] Abdul Basit: automotive art.
+[00:01:15] Sameer Uddin: Dragon fruits, both factual accuracy and relevance of the related and looking at
+[00:01:19] Sameer Uddin: quadrature modern air applications.

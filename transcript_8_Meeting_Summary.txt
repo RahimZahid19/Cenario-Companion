@@ -1,0 +1,6 @@
+The meeting aimed to plan the Flight Management app, outlining key features, backend architecture, and UI flow. The team discussed:
+
+* The app's purpose: managing flight assignments, crew tracking, schedules, and delays in real-time.
+* The UI: a dashboard for airline admins showing upcoming flights, aircraft status, and quick actions for scheduling or delay reporting. Mobile support was raised but not decided.
+* Notifications: sending SMS or Apple Alerts, with no consensus.
+* Next steps: Hakrenx will provide user stories and function requirements by tomorrow, and a backend setup session will be scheduled once the schema is ready.

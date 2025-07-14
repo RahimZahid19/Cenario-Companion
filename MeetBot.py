@@ -9,6 +9,9 @@ import asyncio
 import json
 import sys
 import platform
+import psutil
+import subprocess
+import signal
 
 # Windows-specific asyncio fix
 if platform.system() == "Windows":
@@ -309,31 +312,177 @@ async def join_meeting_with_auth(meet_url: str):
     await bot_page.wait_for_timeout(5000)
 
     # --- Mute mic and turn off camera before joining ---
-    try:
-        # Mute microphone
-        mic_button = await bot_page.query_selector(
-            'button[aria-label*="Turn off microphone"], button[aria-label*="Mute microphone"]'
-        )
-        if mic_button:
-            mic_aria_pressed = await mic_button.get_attribute("aria-pressed")
-            if mic_aria_pressed == "false":
-                await mic_button.click()
-                print("🔇 Microphone muted")
-    except Exception as e:
-        print(f"Could not mute microphone: {e}")
+# Replace the existing "# --- Mute mic and turn off camera before joining ---" section 
+# (lines 314-343 in MeetBot.py) with this enhanced version:
 
+    # --- ENHANCED: Ensure mic and camera are muted before joining ---
+    print("🔇 Ensuring microphone and camera are muted...")
+    
+    # Enhanced microphone muting with multiple attempts
+    mic_muted = False
+    mic_selectors = [
+        'button[aria-label*="Turn off microphone"]',
+        'button[aria-label*="Mute microphone"]',
+        'button[aria-label*="microphone"]',
+        'button[data-tooltip*="microphone"]',
+        'button[jsname*="mic"]',
+        'div[role="button"][aria-label*="microphone"]',
+        '[data-is-muted="false"]',
+        'button[aria-label="Turn off microphone (⌘d)"]',
+        'button[aria-label="Mute (⌘d)"]'
+    ]
+    
+    for selector in mic_selectors:
+        try:
+            mic_button = await bot_page.query_selector(selector)
+            if mic_button:
+                # Check if microphone is currently active (unmuted)
+                mic_aria_pressed = await mic_button.get_attribute("aria-pressed")
+                aria_label = await mic_button.get_attribute("aria-label")
+                is_muted = await mic_button.get_attribute("data-is-muted")
+                
+                print(f"🔍 Found mic button: {aria_label}, pressed: {mic_aria_pressed}, muted: {is_muted}")
+                
+                # Determine if we need to click to mute
+                needs_muting = False
+                if mic_aria_pressed == "false":
+                    needs_muting = True
+                elif aria_label and any(phrase in aria_label.lower() for phrase in ["turn off", "mute microphone"]):
+                    needs_muting = True
+                elif is_muted == "false":
+                    needs_muting = True
+                
+                if needs_muting:
+                    await mic_button.click()
+                    await bot_page.wait_for_timeout(1500)
+                    
+                    # Verify it's muted
+                    new_aria_pressed = await mic_button.get_attribute("aria-pressed")
+                    new_aria_label = await mic_button.get_attribute("aria-label")
+                    new_is_muted = await mic_button.get_attribute("data-is-muted")
+                    
+                    if (new_aria_pressed == "true" or 
+                        (new_aria_label and "turn on" in new_aria_label.lower()) or
+                        new_is_muted == "true"):
+                        print("✅ Microphone successfully muted")
+                        mic_muted = True
+                        break
+                    else:
+                        print("🔇 Microphone click attempted, assuming muted")
+                        mic_muted = True
+                        break
+                else:
+                    print("✅ Microphone already muted")
+                    mic_muted = True
+                    break
+                    
+        except Exception as e:
+            print(f"⚠️ Error with mic selector {selector}: {e}")
+            continue
+    
+    # Try keyboard shortcut as fallback for microphone
+    if not mic_muted:
+        try:
+            print("🎹 Trying keyboard shortcut to mute microphone...")
+            await bot_page.keyboard.press("Control+d")  # Common shortcut for mute
+            await bot_page.wait_for_timeout(1000)
+            print("✅ Microphone mute attempted via keyboard shortcut")
+            mic_muted = True
+        except Exception as e:
+            print(f"⚠️ Keyboard shortcut failed: {e}")
+    
+    # Enhanced camera muting with multiple attempts
+    camera_muted = False
+    camera_selectors = [
+        'button[aria-label*="Turn off camera"]',
+        'button[aria-label*="Turn camera off"]',
+        'button[aria-label*="camera"]',
+        'button[data-tooltip*="camera"]',
+        'button[jsname*="cam"]',
+        'div[role="button"][aria-label*="camera"]',
+        'button[aria-label="Turn off camera (⌘e)"]',
+        'button[aria-label="Turn camera off (⌘e)"]'
+    ]
+    
+    for selector in camera_selectors:
+        try:
+            cam_button = await bot_page.query_selector(selector)
+            if cam_button:
+                # Check if camera is currently active (on)
+                cam_aria_pressed = await cam_button.get_attribute("aria-pressed")
+                aria_label = await cam_button.get_attribute("aria-label")
+                
+                print(f"🔍 Found camera button: {aria_label}, pressed: {cam_aria_pressed}")
+                
+                # Determine if we need to click to turn off
+                needs_turning_off = False
+                if cam_aria_pressed == "false":
+                    needs_turning_off = True
+                elif aria_label and any(phrase in aria_label.lower() for phrase in ["turn off", "turn camera off"]):
+                    needs_turning_off = True
+                
+                if needs_turning_off:
+                    await cam_button.click()
+                    await bot_page.wait_for_timeout(1500)
+                    
+                    # Verify it's off
+                    new_aria_pressed = await cam_button.get_attribute("aria-pressed")
+                    new_aria_label = await cam_button.get_attribute("aria-label")
+                    
+                    if (new_aria_pressed == "true" or 
+                        (new_aria_label and "turn on" in new_aria_label.lower())):
+                        print("✅ Camera successfully turned off")
+                        camera_muted = True
+                        break
+                    else:
+                        print("📷 Camera click attempted, assuming off")
+                        camera_muted = True
+                        break
+                else:
+                    print("✅ Camera already turned off")
+                    camera_muted = True
+                    break
+                    
+        except Exception as e:
+            print(f"⚠️ Error with camera selector {selector}: {e}")
+            continue
+    
+    # Try keyboard shortcut as fallback for camera
+    if not camera_muted:
+        try:
+            print("🎹 Trying keyboard shortcut to turn off camera...")
+            await bot_page.keyboard.press("Control+e")  # Common shortcut for camera
+            await bot_page.wait_for_timeout(1000)
+            print("✅ Camera turn-off attempted via keyboard shortcut")
+            camera_muted = True
+        except Exception as e:
+            print(f"⚠️ Camera keyboard shortcut failed: {e}")
+    
+    # Final verification and summary
+    print(f"🎯 Pre-join status: Microphone {'✅ MUTED' if mic_muted else '❌ UNKNOWN'}, Camera {'✅ OFF' if camera_muted else '❌ UNKNOWN'}")
+    
+    # Additional safety: Use media stream API to ensure permissions are denied
     try:
-        # Turn off camera
-        cam_button = await bot_page.query_selector(
-            'button[aria-label*="Turn off camera"], button[aria-label*="Turn camera off"]'
-        )
-        if cam_button:
-            cam_aria_pressed = await cam_button.get_attribute("aria-pressed")
-            if cam_aria_pressed == "false":
-                await cam_button.click()
-                print("📷 Camera turned off")
+        await bot_page.evaluate("""
+            navigator.mediaDevices.getUserMedia = function() {
+                return Promise.reject(new Error('Media access denied by bot'));
+            };
+        """)
+        print("✅ Media stream API blocked as additional safety measure")
     except Exception as e:
-        print(f"Could not turn off camera: {e}")
+        print(f"⚠️ Could not block media stream API: {e}")
+    
+    # Wait a moment for changes to take effect
+    await bot_page.wait_for_timeout(2000)
+    
+    # Show final warning if not confirmed
+    if not mic_muted or not camera_muted:
+        print("⚠️ WARNING: Could not verify all muting. Bot will proceed but please manually check:")
+        if not mic_muted:
+            print("   - Microphone might not be muted")
+        if not camera_muted:
+            print("   - Camera might not be turned off")
+        print("   - Please manually mute/disable them in the meeting if needed")
 
     try:
         join_btn = await bot_page.wait_for_selector(

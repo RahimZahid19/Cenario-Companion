@@ -1,19 +1,6 @@
-[13:00:12] Sarah Ali: Welcome everyone, today we'll go over our RAG system implementation and integration with Pinecone.
-[13:00:25] Ahmed Khan: Yes, I've been working on the retriever module. We’re using sentence-transformers for embedding generation.
-[13:00:39] Sarah Ali: Good. Are we sticking with all-MiniLM-L6-v2 or moving to a larger model for better recall?
-[13:00:52] Ahmed Khan: For now, we’ll stay with MiniLM due to its speed, but I’ve tested BGE-base as well — decent improvement in relevance.
-[13:01:13] Maria Javed: Just confirming, are we chunking input documents by sentence or paragraph?
-[13:01:26] Ahmed Khan: Paragraph-level chunking with overlap. Roughly 500-character chunks and 50-character overlaps.
-[13:01:39] Sameer Uddin: Are we storing any metadata in Pinecone like source URL, timestamp, or user tags?
-[13:01:50] Ahmed Khan: Yes, each vector has metadata including doc_id, user_id, title, and created_at timestamp.
-[13:02:03] Sarah Ali: Perfect. That helps for filtered retrieval. What about follow-up question handling?
-[13:02:17] Maria Javed: We’re using conversational memory with LangChain. It passes chat history back into the LLM.
-[13:02:30] Sameer Uddin: Should we consider summarizing long transcripts before embedding them?
-[13:02:44] Ahmed Khan: Yes, especially for meeting transcripts. I’ve added a preprocessing step using GPT-3.5 to summarize first.
-[13:02:58] Sarah Ali: Good thinking. What about real-time latency? How long does the whole RAG flow take right now?
-[13:03:11] Ahmed Khan: About 1.2 to 1.5 seconds per query, including retrieval and generation. It can be optimized with local caching.
-[13:03:25] Maria Javed: Any thoughts on switching from Pinecone to Chroma or FAISS for cost reasons?
-[13:03:39] Sameer Uddin: Pinecone is convenient, but Chroma with persistent storage might save us money long-term.
-[13:03:52] Sarah Ali: Okay let’s review costs this Friday. For now, please document the current architecture. Anything else?
-[13:04:05] Ahmed Khan: Just one thing — the fallback when no relevant documents are found. Should we allow LLM to hallucinate or return a safe default?
-[13:04:18] Sarah Ali: Safe default with a disclaimer. Add it to the UX copy. Thanks everyone!
+[00:00:36] Sameer Uddin: This big rag, especially powerful for thoughts that requires up to date on
+[00:00:40] Sameer Uddin: domain specific information such as answering complex questions, Summarize long
+[00:00:44] Sameer Uddin: documents or generating business content for meeting transcripts. When
+[00:00:49] Sameer Uddin: grounding, it's response in real ladder and improve both the factual language in
+[00:00:52] Sameer Uddin: relevance of generated content making it for architecture model year
+[00:00:56] Sameer Uddin: applications.

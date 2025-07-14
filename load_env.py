@@ -15,3 +15,7 @@ def setup_env():
     # === Pinecone Environment Check ===
     if not os.getenv("PINECONE_ENVIRONMENT"):
         raise ValueError("PINECONE_ENVIRONMENT is not set. Add it to your .env file.")
+
+    # === Recall API Key Check ===
+    if not os.getenv("RECALL_API_KEY"):
+        raise ValueError("RECALL_API_KEY is not set. Add it to your .env file.")
