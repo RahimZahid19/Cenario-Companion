@@ -554,7 +554,7 @@ async def get_key_insights(
             # Use full transcript if it's short enough
             sampled_transcript = transcript_text
 
-        # Updated prompt with better timestamp handling
+        # Enhanced prompt with context, significance, and speaker extraction
         key_insights_prompt = f"""
         Based on the following meeting transcript, generate key insights and takeaways.
         Focus on:
@@ -568,20 +568,43 @@ async def get_key_insights(
         {sampled_transcript}
 
         Instructions:
+        - Analyze the transcript format: [timestamp] Speaker: message
+        - Extract insights from the actual conversation content
+        - For each insight, identify WHO said it by looking at the speaker name before the colon
         - Look carefully for timestamps in [mm:ss] format throughout the transcript
         - Extract the actual timestamp when each insight was mentioned
         - If multiple timestamps relate to one insight, use the first occurrence
         - If no timestamp is clearly associated with an insight, use "N/A"
         - Generate insights from different parts of the meeting to show timeline progression
+        - For each insight, provide context about what was being discussed at that moment
+        - Explain why each insight is significant to the meeting or project
 
         Return ONLY a valid JSON object:
         {{
             "key_insights": [
                 {{
                     "insight": "description of the insight",
-                    "category": "decision/agreement/challenge/strategy/critical",
+                    "category": "decision/agreement/challenge/strategy/critical/fact/update",
                     "importance": "High/Medium/Low",
-                    "timestamp": "mm:ss when mentioned or N/A if not found"
+                    "timestamp": "mm:ss when mentioned or N/A if not found",
+                    "context": "What was being discussed when this insight emerged, surrounding conversation context",
+                    "significance": "Why this insight is important, its impact on the project/meeting outcome",
+                    "speaker": "Name of the person who said this or 'Multiple' if discussed by several people"
+                }}
+            ]
+        }}
+
+        Example format for reference:
+        {{
+            "key_insights": [
+                {{
+                    "insight": "Ferrari is a prestigious car manufacturer known for its sleek design",
+                    "category": "strategy",
+                    "importance": "High",
+                    "timestamp": "00:01:15",
+                    "context": "Discussion about automotive industry leaders and brand positioning strategies",
+                    "significance": "Establishes Ferrari as a benchmark for luxury automotive excellence, which could inform product development strategies",
+                    "speaker": "John Smith"
                 }}
             ]
         }}
@@ -621,16 +644,34 @@ async def get_key_insights(
             insights_data = json.loads(cleaned_content)
             key_insights = insights_data.get("key_insights", [])
             
-            print(f"✅ Generated {len(key_insights)} insights")
+            # Validate and ensure all insights have the required fields
+            validated_insights = []
+            for insight in key_insights:
+                validated_insight = {
+                    "insight": insight.get("insight", ""),
+                    "category": insight.get("category", "fact"),
+                    "importance": insight.get("importance", "Medium"),
+                    "timestamp": insight.get("timestamp", "N/A"),
+                    "context": insight.get("context", "No additional context available"),
+                    "significance": insight.get("significance", "Insight provides valuable information for meeting understanding"),
+                    "speaker": insight.get("speaker", "Unknown")
+                }
+                validated_insights.append(validated_insight)
+            
+            print(f"✅ Generated {len(validated_insights)} validated insights")
             
         except Exception as e:
             print("LLM/JSON error:", str(e))
-            key_insights = [
+            # Fallback insights with all required fields
+            validated_insights = [
                 {
                     "insight": "Review meeting transcript for key insights",
                     "category": "critical",
                     "importance": "High",
                     "timestamp": "N/A",
+                    "context": "Automatic fallback when insight generation fails",
+                    "significance": "Indicates the need for manual review of meeting content to extract valuable insights",
+                    "speaker": "System"
                 }
             ]
 
@@ -638,7 +679,7 @@ async def get_key_insights(
             {
                 "status": True,
                 "message": "Key insights generated successfully.",
-                "key_insights": key_insights,
+                "key_insights": validated_insights,
                 "meeting_id": meeting_id,
                 "session_id_used": actual_session_id,
                 "project_id": project_id,

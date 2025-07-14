@@ -4,7 +4,8 @@ from common import create_json_response, run_in_threadpool
 from constants import get_latest_main_transcript, BASE_DIR, TRANSCRIPT_MAP
 from bot1 import extract_text_from_pdf, generate_questions_with_groq
 from cleaner import convert_chat_to_transcript, get_latest_transcript
-from MeetBot import start_meeting_bot, leave_meeting
+# Replace MeetBot import with Recall import
+from Recall import start_meeting_bot, leave_meeting, is_bot_running, get_current_bot_id
 from Metadata import ProjectCreateRequest, FinalizeMetadataRequest, Metadata, set_full_metadata
 from VectorDatabaseStoring import read_transcript, get_embedding, upsert_to_pinecone, chunk_text, upsert_question_answer
 import uuid, os, asyncio
@@ -17,9 +18,6 @@ from datetime import datetime
 import uuid, os, asyncio, requests
 import json
 
-
-
-
 router = APIRouter()
 
 projects_db = {}
@@ -29,7 +27,7 @@ latest_metadata = None
 bot_startup_lock = asyncio.Lock()
 bot_state = "idle"  # "idle", "starting", "running", "stopping"
 bot_join_task = None
-current_meeting_id = None  # "idle", "starting", "running", "stopping"
+current_meeting_id = None
 last_join_time = 0
 MIN_STARTUP_TIME = 3
 
@@ -74,26 +72,31 @@ async def join_meeting(request: JoinMeetingRequest = Body(...)):
                 })
             
             # Construct the full Google Meet URL
-            # If it's already a full URL, use it as is
             if meeting_id.startswith("https://meet.google.com/"):
                 meeting_url = meeting_id
             else:
-                # If it's just the meeting ID, construct the full URL
                 meeting_url = f"https://meet.google.com/{meeting_id}"
             
-            # Store the current meeting ID (just the ID part, not the full URL)
+            # Store the current meeting ID
             current_meeting_id = meeting_id
             bot_state = "starting"
             last_join_time = time.time()
             
-            # Start bot in background
+            # Start Recall.ai bot in background
             async def start_bot_async():
                 global bot_state, current_meeting_id
                 try:
-                    await run_in_threadpool(start_meeting_bot, meeting_url)
-                    bot_state = "running"
+                    # Use Recall.ai bot instead of MeetBot
+                    success = await run_in_threadpool(start_meeting_bot, meeting_url)
+                    if success:
+                        bot_state = "running"
+                        print(f"✅ Recall.ai bot successfully joined meeting: {meeting_id}")
+                    else:
+                        bot_state = "idle"
+                        current_meeting_id = None
+                        print(f"❌ Failed to start Recall.ai bot for meeting: {meeting_id}")
                 except Exception as e:
-                    print(f"Error starting bot: {e}")
+                    print(f"❌ Error starting Recall.ai bot: {e}")
                     bot_state = "idle"
                     current_meeting_id = None
                     
@@ -110,41 +113,37 @@ async def join_meeting(request: JoinMeetingRequest = Body(...)):
             
             return create_json_response({
                 "status": "success",
-                "message": f"Bot is starting to join meeting: {meeting_id}",
+                "message": f"Recall.ai bot is starting to join meeting: {meeting_id}",
                 "meeting_id": meeting_id,
                 "meeting_url": meeting_url,
                 "bot_running": True,
-                "bot_state": "starting"
+                "bot_state": "starting",
+                "bot_type": "recall.ai"
             })
             
         except Exception as e:
             bot_state = "idle"
             current_meeting_id = None
             
-            # Enhanced error message based on error type
+            # Enhanced error message for Recall.ai
             error_str = str(e).lower()
             
-            if "net::err_name_not_resolved" in error_str:
-                error_message = "Bot failed to connect to the internet. Please check your internet connection and DNS settings. The bot cannot resolve domain names (DNS error)."
-            elif "net::err_network_changed" in error_str or "net::err_internet_disconnected" in error_str:
-                error_message = "Bot lost internet connection during startup. Please check your network connection and try again."
-            elif "net::err_connection_refused" in error_str or "net::err_connection_timeout" in error_str:
-                error_message = "Bot cannot connect to Google servers. Please check your internet connection and firewall settings. The connection was refused or timed out."
-            elif "accounts.google.com" in error_str:
-                error_message = "Bot cannot connect to Google authentication servers. Please check your internet connection and verify that Google services are accessible."
-            elif "authentication expired" in error_str or "auth" in error_str:
-                error_message = "Bot authentication has expired. Please run the login process again to refresh authentication credentials."
-            elif "failed to load authentication" in error_str:
-                error_message = "Bot failed to load authentication due to network connectivity issues. Please check your internet connection and try again."
-            elif "meet.google.com" in error_str:
-                error_message = "Bot cannot connect to Google Meet servers. Please check your internet connection and verify that Google Meet is accessible."
+            if "recall_api_key" in error_str:
+                error_message = "Recall.ai API key is not set or invalid. Please check your .env file and ensure RECALL_API_KEY is configured."
+            elif "authentication" in error_str:
+                error_message = "Recall.ai authentication failed. Please check your API key and try again."
+            elif "meeting_url" in error_str:
+                error_message = "Invalid meeting URL format. Please provide a valid Google Meet URL."
+            elif "network" in error_str or "connection" in error_str:
+                error_message = "Network error connecting to Recall.ai API. Please check your internet connection and try again."
             else:
-                error_message = f"Bot failed to start due to a network or connectivity error: {str(e)}. Please check your internet connection and try again."
+                error_message = f"Recall.ai bot failed to start: {str(e)}. Please check your configuration and try again."
             
             return create_json_response({
                 "status": "error",
                 "message": error_message,
-                "bot_running": False
+                "bot_running": False,
+                "bot_type": "recall.ai"
             }, status_code=500)
 
 @router.post("/sessions")
@@ -548,7 +547,7 @@ async def finalize_metadata(req: FinalizeMetadataRequest):
 
 @router.post("/process-meeting-end")
 async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
-    """Process meeting end, leave meeting, generate answers for session questions, and finalize metadata"""
+    """Process meeting end using Recall.ai bot, generate answers for session questions, and finalize metadata"""
     global bot_state, bot_join_task, current_meeting_id
     
     async with bot_startup_lock:
@@ -599,8 +598,9 @@ async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
             # Set state to stopping
             bot_state = "stopping"
             
-            # Leave meeting
-            leave_success = await run_in_threadpool(leave_meeting)
+            # Leave meeting using Recall.ai bot
+            print("🔄 Ending Recall.ai bot session...")
+            result = await run_in_threadpool(leave_meeting)
             
             # Reset state and clear meeting ID
             bot_state = "idle"
@@ -608,228 +608,216 @@ async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
             current_meeting_id = None
             
             # Process transcript and generate answers
-            from cleaner import convert_chat_to_transcript, get_latest_transcript
-            
-            # Try to get transcript
-            result = await run_in_threadpool(convert_chat_to_transcript)
-            if not result:
-                result = await run_in_threadpool(get_latest_transcript)
-            
             generated_count = 0
             metadata_finalized = False
             chunks_processed = 0
+            transcript_file = None
             
+            # The leave_meeting function returns the transcript filename if successful
             if result:
-                try:
-                    # Read transcript
-                    transcript_path = os.path.join(BASE_DIR, result)
-                    if os.path.exists(transcript_path):
-                        with open(transcript_path, "r", encoding="utf-8") as f:
-                            transcript_text = f.read()
-                        
-                        # Get questions for this session
-                        questions = questions_db.get(session_id, [])
-                        
-                        if questions and transcript_text.strip():
-                            from cleaner import llm
+                if isinstance(result, str):
+                    # If result is a string, it's the transcript filename
+                    transcript_file = result
+                    leave_success = True
+                else:
+                    # If result is boolean, it's the leave success status
+                    leave_success = result
+                    # Try to get the latest transcript
+                    try:
+                        transcript_file = await run_in_threadpool(get_latest_transcript)
+                    except Exception as e:
+                        print(f"❌ Error getting latest transcript: {e}")
+                        transcript_file = None
+                
+                if transcript_file:
+                    try:
+                        # Read transcript
+                        transcript_path = os.path.join(BASE_DIR, transcript_file)
+                        if os.path.exists(transcript_path):
+                            with open(transcript_path, "r", encoding="utf-8") as f:
+                                transcript_text = f.read()
                             
-                            # PARALLEL ANSWER GENERATION
-                            async def generate_answer_async(question, question_index):
-                                try:
-                                    prompt = f"""
-                                    You are analyzing a meeting transcript to answer specific questions.
-                                    
-                                    Question: {question.get('question', '')}
+                            # Get questions for this session
+                            questions = questions_db.get(session_id, [])
+                            
+                            if questions and transcript_text.strip():
+                                from cleaner import llm
+                                
+                                # PARALLEL ANSWER GENERATION
+                                async def generate_answer_async(question, question_index):
+                                    try:
+                                        prompt = f"""
+                                        You are analyzing a meeting transcript to answer specific questions.
+                                        
+                                        Question: {question.get('question', '')}
 
-                                    Meeting Transcript:
-                                    {transcript_text[:4000]}
+                                        Meeting Transcript:
+                                        {transcript_text[:4000]}
 
-                                    Instructions:
-                                    - Only answer if the information is clearly and explicitly discussed in the transcript
-                                    - Provide a direct, factual answer in 1-2 sentences
-                                    - Do not mention the transcript or meeting in your answer
-                                    - Do not use phrases like "based on the transcript" or "according to the meeting"
-                                    - If the information is not discussed, simply state "Information not available"
-                                    """
+                                        Instructions:
+                                        - Only answer if the information is clearly and explicitly discussed in the transcript
+                                        - Provide a direct, factual answer in 1-2 sentences
+                                        - Do not mention the transcript or meeting in your answer
+                                        - Do not use phrases like "based on the transcript" or "according to the meeting"
+                                        - If the information is not discussed, simply state "Information not available"
+                                        """
 
-                                    result_llm = await run_in_threadpool(llm.invoke, prompt)
-                                    answer = (
-                                        result_llm.content.strip()
-                                        if hasattr(result_llm, "content")
-                                        else str(result_llm).strip()
-                                    )
-                                    
-                                    # Clean up the answer
-                                    answer = answer.replace("\n", " ").strip()
-                                    
-                                    # Function to check if answer is valid and meaningful
-                                    def is_valid_answer(ans):
-                                        if not ans or len(ans) < 15:
+                                        result_llm = await run_in_threadpool(llm.invoke, prompt)
+                                        answer = (
+                                            result_llm.content.strip()
+                                            if hasattr(result_llm, "content")
+                                            else str(result_llm).strip()
+                                        )
+                                        
+                                        # Clean up the answer
+                                        answer = answer.replace("\n", " ").strip()
+                                        
+                                        # Function to check if answer is valid and meaningful
+                                        def is_valid_answer(ans):
+                                            if not ans or len(ans) < 15:
+                                                return False
+                                            
+                                            # Convert to lowercase for checking
+                                            ans_lower = ans.lower()
+                                            
+                                            # Reject answers that contain these phrases
+                                            reject_phrases = [
+                                                "no_answer", "blank", "not_discussed", "information not available",
+                                                "not discussed", "not mentioned", "not found", "not addressed",
+                                                "not covered", "no information", "not specified", "not clear",
+                                                "unclear", "not available", "not explicitly", "does not mention",
+                                                "not provided", "not stated", "not indicated", "no details",
+                                                "not elaborated", "not explained", "transcript does not",
+                                                "meeting does not", "conversation does not", "discussion does not",
+                                                "based on the transcript", "according to the meeting",
+                                                "from the transcript", "in the transcript", "the meeting transcript",
+                                                "are not explicitly discussed", "is not explicitly discussed",
+                                                "focuses on", "but does not mention", "however", "the conversation focuses"
+                                            ]
+                                            
+                                            # If answer contains any reject phrases, it's not valid
+                                            if any(phrase in ans_lower for phrase in reject_phrases):
+                                                return False
+                                            
+                                            # Check if it's mostly negative/explanatory text
+                                            negative_words = ["not", "no", "does", "doesn't", "cannot", "can't", "unable", "without"]
+                                            words = ans.split()
+                                            negative_count = sum(1 for word in words if word.lower() in negative_words)
+                                            
+                                            # If more than 30% of words are negative, likely not a real answer
+                                            if len(words) > 0 and (negative_count / len(words)) > 0.3:
+                                                return False
+                                            
+                                            return True
+                                        
+                                        if is_valid_answer(answer):
+                                            # Valid answer found
+                                            question["answer"] = answer
+                                            question["source"] = "transcript"
+                                            print(f"✅ Generated answer for: {question.get('question', '')[:50]}...")
+                                            return True
+                                        else:
+                                            # Not discussed - leave blank
+                                            question["answer"] = ""
+                                            question["source"] = "transcript"
+                                            print(f"⚠️ No valid answer for: {question.get('question', '')[:50]}...")
                                             return False
-                                        
-                                        # Convert to lowercase for checking
-                                        ans_lower = ans.lower()
-                                        
-                                        # Reject answers that contain these phrases
-                                        reject_phrases = [
-                                            "no_answer",
-                                            "blank",
-                                            "not_discussed",
-                                            "information not available",
-                                            "not discussed",
-                                            "not mentioned",
-                                            "not found",
-                                            "not addressed",
-                                            "not covered",
-                                            "no information",
-                                            "not specified",
-                                            "not clear",
-                                            "unclear",
-                                            "not available",
-                                            "not explicitly",
-                                            "does not mention",
-                                            "not provided",
-                                            "not stated",
-                                            "not indicated",
-                                            "no details",
-                                            "not elaborated",
-                                            "not explained",
-                                            "transcript does not",
-                                            "meeting does not",
-                                            "conversation does not",
-                                            "discussion does not",
-                                            "based on the transcript",
-                                            "according to the meeting",
-                                            "from the transcript",
-                                            "in the transcript",
-                                            "the meeting transcript",
-                                            "are not explicitly discussed",
-                                            "is not explicitly discussed",
-                                            "focuses on",
-                                            "but does not mention",
-                                            "however",
-                                            "the conversation focuses"
-                                        ]
-                                        
-                                        # If answer contains any reject phrases, it's not valid
-                                        if any(phrase in ans_lower for phrase in reject_phrases):
-                                            return False
-                                        
-                                        # Check if it's mostly negative/explanatory text
-                                        negative_words = ["not", "no", "does", "doesn't", "cannot", "can't", "unable", "without"]
-                                        words = ans.split()
-                                        negative_count = sum(1 for word in words if word.lower() in negative_words)
-                                        
-                                        # If more than 30% of words are negative, likely not a real answer
-                                        if len(words) > 0 and (negative_count / len(words)) > 0.3:
-                                            return False
-                                        
-                                        return True
-                                    
-                                    if is_valid_answer(answer):
-                                        # Valid answer found
-                                        question["answer"] = answer
-                                        question["source"] = "transcript"
-                                        print(f"✅ Generated answer for: {question.get('question', '')[:50]}...")
-                                        return True
-                                    else:
-                                        # Not discussed - leave blank
+                                            
+                                    except Exception as e:
+                                        print(f"❌ Error generating answer for question {question_index}: {e}")
                                         question["answer"] = ""
-                                        question["source"] = "transcript"
-                                        print(f"⚠️ No valid answer for: {question.get('question', '')[:50]}...")
+                                        question["source"] = "error"
                                         return False
-                                        
-                                except Exception as e:
-                                    print(f"❌ Error generating answer for question {question_index}: {e}")
-                                    question["answer"] = ""
-                                    question["source"] = "error"
-                                    return False
-                            
-                            # Collect questions that need processing
-                            tasks = []
-                            questions_to_process = []
-                            
-                            for i, question in enumerate(questions):
-                                # Skip if already answered manually
-                                if question.get("source") == "manual" and question.get("answer"):
-                                    continue
                                 
-                                tasks.append(generate_answer_async(question, i + 1))
-                                questions_to_process.append(question)
+                                # Collect questions that need processing
+                                tasks = []
+                                questions_to_process = []
+                                
+                                for i, question in enumerate(questions):
+                                    # Skip if already answered manually
+                                    if question.get("source") == "manual" and question.get("answer"):
+                                        continue
+                                    
+                                    tasks.append(generate_answer_async(question, i + 1))
+                                    questions_to_process.append(question)
+                                
+                                # Run all tasks in parallel
+                                if tasks:
+                                    print(f"🚀 Processing {len(tasks)} questions in parallel...")
+                                    start_time = time.time()
+                                    
+                                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                                    
+                                    # Count successful generations (only count non-empty answers)
+                                    generated_count = sum(1 for result in results if result is True)
+                                    
+                                    end_time = time.time()
+                                    processing_time = end_time - start_time
+                                    
+                                    print(f"✅ Completed {generated_count}/{len(tasks)} questions successfully in {processing_time:.2f} seconds")
+                                
+                                # Update questions in database
+                                questions_db[session_id] = questions
                             
-                            # Run all tasks in parallel
-                            if tasks:
-                                print(f"🚀 Processing {len(tasks)} questions in parallel...")
-                                start_time = time.time()
+                            # FINALIZE METADATA AND STORE IN VECTOR DATABASE
+                            print(f"🔄 Finalizing metadata for session: {session_id}")
+                            try:
+                                project_id = session.get("project_id")
+                                project = projects_db.get(project_id, {})
+                                manual_fields = {**project, **session}
+
+                                # Create metadata object and generate metadata
+                                metadata = Metadata(manual_fields)
+                                metadata.generate_after_meeting(transcript_path)
+
+                                # Read and chunk the transcript
+                                transcript_text = read_transcript(transcript_path)
+                                chunks = chunk_text(transcript_text)
+
+                                # Process each chunk and store in vector database
+                                for idx, chunk in enumerate(chunks):
+                                    try:
+                                        final_metadata = metadata.get_metadata(chunk_index=idx)
+                                        final_metadata["text"] = chunk  # Store the chunk text
+                                        embedding = get_embedding(chunk)
+                                        upsert_to_pinecone(embedding, final_metadata)
+                                        chunks_processed += 1
+                                    except Exception as e:
+                                        print(f"❌ Embedding or upsert failed for chunk {idx}: {e}")
+
+                                # Store last chunk's metadata globally
+                                global latest_metadata
+                                latest_metadata = final_metadata
+
+                                set_full_metadata(final_metadata)
+                                metadata_finalized = True
+
+                                print(f"✅ Metadata finalized and {chunks_processed} chunks stored in vector database")
+
+                            except Exception as e:
+                                print(f"❌ Error finalizing metadata: {e}")
+                                metadata_finalized = False
                                 
-                                results = await asyncio.gather(*tasks, return_exceptions=True)
-                                
-                                # Count successful generations (only count non-empty answers)
-                                generated_count = sum(1 for result in results if result is True)
-                                
-                                end_time = time.time()
-                                processing_time = end_time - start_time
-                                
-                                print(f"✅ Completed {generated_count}/{len(tasks)} questions successfully in {processing_time:.2f} seconds")
-                            
-                            # Update questions in database
-                            questions_db[session_id] = questions
-                        
-                        # FINALIZE METADATA AND STORE IN VECTOR DATABASE
-                        print(f"🔄 Finalizing metadata for session: {session_id}")
-                        try:
-                            project_id = session.get("project_id")
-                            project = projects_db.get(project_id, {})
-                            manual_fields = {**project, **session}
-
-                            # Create metadata object and generate metadata
-                            metadata = Metadata(manual_fields)
-                            metadata.generate_after_meeting(transcript_path)
-
-                            # Read and chunk the transcript
-                            transcript_text = read_transcript(transcript_path)
-                            chunks = chunk_text(transcript_text)
-
-                            # Process each chunk and store in vector database
-                            for idx, chunk in enumerate(chunks):
-                                try:
-                                    final_metadata = metadata.get_metadata(chunk_index=idx)
-                                    final_metadata["text"] = chunk  # Store the chunk text
-                                    embedding = get_embedding(chunk)
-                                    upsert_to_pinecone(embedding, final_metadata)
-                                    chunks_processed += 1
-                                except Exception as e:
-                                    print(f"❌ Embedding or upsert failed for chunk {idx}: {e}")
-
-                            # Store last chunk's metadata globally
-                            global latest_metadata
-                            latest_metadata = final_metadata
-
-                            set_full_metadata(final_metadata)
-                            metadata_finalized = True
-
-                            print(f"✅ Metadata finalized and {chunks_processed} chunks stored in vector database")
-
-                        except Exception as e:
-                            print(f"❌ Error finalizing metadata: {e}")
-                            metadata_finalized = False
-                            
-                except Exception as e:
-                    print(f"❌ Error processing transcript: {e}")
+                    except Exception as e:
+                        print(f"❌ Error processing transcript: {e}")
+                        transcript_file = None
+            else:
+                leave_success = False
             
             # Return success response
             return create_json_response({
                 "status": "success",
-                "message": f"Successfully processed meeting end for session: {session_id}",
+                "message": f"Successfully processed meeting end for session: {session_id} using Recall.ai",
                 "session_id": session_id,
                 "meeting_id": meeting_to_end,
                 "bot_left": leave_success,
-                "transcript_file": result,
+                "transcript_file": transcript_file,
                 "answers_generated": generated_count,
                 "metadata_finalized": metadata_finalized,
                 "chunks_processed": chunks_processed,
                 "bot_running": False,
-                "bot_state": "idle"
+                "bot_state": "idle",
+                "bot_type": "recall.ai"
             })
             
         except Exception as e:
@@ -838,12 +826,11 @@ async def process_meeting_end(req: ProcessMeetingEndRequest = Body(...)):
             current_meeting_id = None
             return create_json_response({
                 "status": "error",
-                "message": f"Error processing meeting end: {str(e)}",
+                "message": f"Error processing meeting end with Recall.ai: {str(e)}",
                 "bot_running": False,
-                "bot_state": "idle"
+                "bot_state": "idle",
+                "bot_type": "recall.ai"
             }, status_code=500)
-
-# ... existing code ...
 
 @router.get("/questions/generated/{session_id}")
 async def get_generated_questions(

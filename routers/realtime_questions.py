@@ -4,6 +4,7 @@ from common import create_json_response, run_in_threadpool
 from load_env import setup_env
 import os
 from datetime import datetime
+import re
 
 # Setup environment
 setup_env()
@@ -14,12 +15,16 @@ llm = init_chat_model("llama3-8b-8192", model_provider="groq")
 
 router = APIRouter()
 
+class QuestionData(BaseModel):
+    question_id: str
+    questions: str
+    tag: str
+    batch: str
+
 class RealtimeQuestionsResponse(BaseModel):
     status: str
     message: str
-    questions: list
-    transcript_length: int
-    timestamp: str
+    data: list[QuestionData]
 
 @router.get("/realtime-questions")
 async def get_realtime_questions(
@@ -37,9 +42,7 @@ async def get_realtime_questions(
             return create_json_response({
                 "status": "error",
                 "message": "Chat file not found. Meeting may not have started yet.",
-                "questions": [],
-                "transcript_length": 0,
-                "timestamp": datetime.now().isoformat()
+                "data": []
             })
         
         # Read the current transcript content
@@ -51,32 +54,77 @@ async def get_realtime_questions(
             return create_json_response({
                 "status": "success",
                 "message": "No transcript content available yet. Please wait for the meeting to progress.",
-                "questions": [],
-                "transcript_length": 0,
-                "timestamp": datetime.now().isoformat()
+                "data": []
             })
         
         # Generate follow-up questions using the LLM
-        questions = await run_in_threadpool(generate_followup_questions, current_transcript, meeting_id)
+        questions_data = await run_in_threadpool(generate_followup_questions, current_transcript, meeting_id)
         
         return create_json_response({
             "status": "success",
             "message": "Follow-up questions generated successfully",
-            "questions": questions,
-            "transcript_length": len(current_transcript),
-            "timestamp": datetime.now().isoformat()
+            "data": questions_data
         })
         
     except Exception as e:
         return create_json_response({
             "status": "error",
             "message": f"Error generating real-time questions: {str(e)}",
-            "questions": [],
-            "transcript_length": 0,
-            "timestamp": datetime.now().isoformat()
+            "data": []
         }, status_code=500)
 
-def generate_followup_questions(transcript: str, meeting_id: str = None) -> list:
+def categorize_question(question: str) -> tuple[str, str]:
+    """
+    Categorize a question into tag and batch based on its content
+    """
+    question_lower = question.lower()
+    
+    # Define tags and their keywords
+    tag_keywords = {
+        "budget": ["cost", "budget", "price", "expense", "financial", "money", "pricing", "payment"],
+        "technical": ["technical", "technology", "system", "architecture", "implementation", "integration", "api", "database", "performance"],
+        "timeline": ["timeline", "schedule", "deadline", "timeframe", "duration", "when", "completion", "delivery"],
+        "requirements": ["requirement", "specification", "feature", "functionality", "need", "must", "should"],
+        "resources": ["resource", "team", "staff", "personnel", "skill", "expertise", "capacity"],
+        "security": ["security", "authentication", "authorization", "privacy", "compliance", "access"],
+        "scalability": ["scalable", "scale", "growth", "volume", "capacity", "performance", "load"],
+        "integration": ["integration", "connect", "interface", "sync", "compatibility", "third-party"],
+        "testing": ["test", "testing", "validation", "verification", "qa", "quality"],
+        "deployment": ["deployment", "release", "launch", "go-live", "production", "environment"],
+        "maintenance": ["maintenance", "support", "update", "upgrade", "monitoring", "backup"],
+        "general": []  # fallback
+    }
+    
+    # Define batches and their keywords
+    batch_keywords = {
+        "functional need": ["feature", "functionality", "capability", "behavior", "user", "business", "process"],
+        "technical need": ["architecture", "system", "technical", "implementation", "technology", "infrastructure"],
+        "business need": ["business", "commercial", "revenue", "market", "strategy", "roi", "value"],
+        "operational need": ["operation", "process", "workflow", "procedure", "efficiency", "productivity"],
+        "compliance need": ["compliance", "regulation", "standard", "policy", "governance", "audit"],
+        "performance need": ["performance", "speed", "response", "throughput", "scalability", "optimization"],
+        "security need": ["security", "privacy", "protection", "access", "authentication", "authorization"],
+        "integration need": ["integration", "interface", "connectivity", "compatibility", "interoperability"],
+        "general need": []  # fallback
+    }
+    
+    # Find best matching tag
+    best_tag = "general"
+    for tag, keywords in tag_keywords.items():
+        if any(keyword in question_lower for keyword in keywords):
+            best_tag = tag
+            break
+    
+    # Find best matching batch
+    best_batch = "general need"
+    for batch, keywords in batch_keywords.items():
+        if any(keyword in question_lower for keyword in keywords):
+            best_batch = batch
+            break
+    
+    return best_tag, best_batch
+
+def generate_followup_questions(transcript: str, meeting_id: str = None) -> list[dict]:
     """
     Generate 3 follow-up questions based on the current transcript content
     """
@@ -86,14 +134,14 @@ def generate_followup_questions(transcript: str, meeting_id: str = None) -> list
     context_info = f" for meeting ID: {meeting_id}" if meeting_id else ""
     
     prompt = f"""
-    Based on the following ongoing meeting transcript{context_info}, generate exactly 3 insightful follow-up questions that would help enrich the conversation and gather more detailed information.
+    Based on the following ongoing meeting transcript{context_info}, generate exactly 3 very short and concise follow-up questions.
 
-    The questions should:
-    1. Be directly related to the topics being discussed
-    2. Help clarify any ambiguous points
-    3. Encourage deeper discussion of important topics
-    4. Be practical and actionable
-    5. Help uncover requirements or details that might be missing
+    Requirements:
+    1. Each question must be maximum 8-10 words
+    2. Be directly related to the topics discussed
+    3. Help clarify key points or gather missing details
+    4. Use simple, direct language
+    5. Focus on one specific aspect per question
 
     Format your response as a simple numbered list with no additional text:
     1. [Question 1]
@@ -123,22 +171,52 @@ def generate_followup_questions(transcript: str, meeting_id: str = None) -> list
         if len(questions) < 3:
             # If we have fewer than 3, add generic but helpful questions
             fallback_questions = [
-                "Could you elaborate on the technical requirements discussed?",
-                "What are the key success criteria for this project?",
-                "Are there any potential challenges or risks we should consider?"
+                "What are the technical requirements?",
+                "What's the project timeline?",
+                "Any potential risks?"
             ]
             questions.extend(fallback_questions[:3-len(questions)])
         
-        return questions[:3]  # Return only the first 3 questions
+        # Convert to the required format with categorization
+        questions_data = []
+        for i, question in enumerate(questions[:3]):
+            # Generate sequential question ID
+            question_id = f"Q{i+1}"
+            
+            # Categorize the question
+            tag, batch = categorize_question(question)
+            
+            questions_data.append({
+                "question_id": question_id,
+                "questions": question,
+                "tag": tag,
+                "batch": batch
+            })
+        
+        return questions_data
         
     except Exception as e:
         print(f"Error generating questions: {e}")
         # Return fallback questions if LLM fails
-        return [
-            "Could you provide more details about the current discussion?",
-            "What are the next steps we should focus on?",
-            "Are there any concerns or questions from your side?"
+        fallback_questions = [
+            "What are the key details?",
+            "What's the next step?",
+            "Any concerns?"
         ]
+        
+        questions_data = []
+        for i, question in enumerate(fallback_questions):
+            question_id = f"Q{i+1}"
+            tag, batch = categorize_question(question)
+            
+            questions_data.append({
+                "question_id": question_id,
+                "questions": question,
+                "tag": tag,
+                "batch": batch
+            })
+        
+        return questions_data
 
 @router.get("/transcript-status")
 async def get_transcript_status():
